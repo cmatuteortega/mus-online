@@ -1,24 +1,26 @@
--- Mus Online – Relay Server with Authentication & Matchmaking
--- Run with: love server/ (from the auto-chest root directory)
--- Clients connect, authenticate, and join matchmaking queue.
--- Server pairs players based on trophy count and forwards messages between them.
+-- Mus Online – Authoritative Game Server with Authentication & Matchmaking
+-- Run with: love server/ (from the repo root directory)
+-- Clients authenticate and queue; the server forms 4-player tables (2v2),
+-- hosts the authoritative mus engine per table (server/tables.lua), and
+-- routes validated intents. Clients never see each other's cards.
 
 local enet = require("enet")
 
--- Set up path for database module
+-- Set up path for repo-root modules (shared/, server/, lib/)
 package.path = package.path .. ';../?.lua'
 
-local Database = require("server.database")
+local Database     = require("server.database")
+local TableManager = require("server.tables")
+local Bot          = require("server.bot")
 
 local PORT    = 12346
-local MAX_CONNECTIONS = 16
+local MAX_CONNECTIONS = 64
 
 local host    = nil
 local db      = nil
 local queue        = {}    -- matchmaking queue: {peer, player_id, username, trophies, queue_time}
-local rooms        = {}    -- keyed by connKey (integer): {peer, partnerKey, role, player_id, username, trophies}
 local sessions     = {}    -- keyed by connKey (integer): {player_id, username, token}
-local privateQueue = {}    -- private match queue: keyed by room_key string: {peer, player_id, username, trophies}
+local privateQueue = {}    -- private tables: room_key → { players = { {peer, player_id, username, trophies} ... } }
 
 -- Per-connection unique IDs — avoids session key collision when ENet reuses peer slots
 local connCounter    = 0
@@ -85,86 +87,53 @@ local function encode(eventName, data)
     return "["..val(eventName)..","..val(data).."]"
 end
 
--- Matchmaking: find opponent within trophy range
-local function findMatch(player)
-    local baseTrophyRange = 100
+-- Matchmaking: allowed trophy range grows the longer a player waits.
+local function allowedRange(player)
     local waitTime = love.timer.getTime() - player.queue_time
-    local expandedRange = baseTrophyRange + math.floor(waitTime / 5) * 50
-    local maxRange = 500
+    return math.min(100 + math.floor(waitTime / 5) * 50, 500)
+end
 
-    expandedRange = math.min(expandedRange, maxRange)
-
-    for i, opponent in ipairs(queue) do
-        if opponent.peer ~= player.peer then
-            local trophyDiff = math.abs(player.trophies - opponent.trophies)
-            if trophyDiff <= expandedRange then
-                -- Found a match!
-                table.remove(queue, i)
-                return opponent
+-- Find 4 mutually-compatible players (anchor = longest waiting first).
+local function findGroup()
+    for i, anchor in ipairs(queue) do
+        local range = allowedRange(anchor)
+        local group = { i }
+        for j, other in ipairs(queue) do
+            if j ~= i and math.abs(anchor.trophies - other.trophies) <= range then
+                group[#group + 1] = j
+                if #group == 4 then return group end
             end
         end
     end
-
     return nil
 end
 
--- Try to match all players in queue
+-- Seat assignment balances teams: sort by trophies, best pairs with worst
+-- (team 1 = seats 1,3 · team 2 = seats 2,4).
+local function seatPlayers(entries)
+    table.sort(entries, function(a, b) return a.trophies > b.trophies end)
+    return { entries[1], entries[2], entries[4], entries[3] }
+end
+
+local function toSeatEntry(q)
+    return { peer = q.peer, connKey = connKey(q.peer), player_id = q.player_id,
+             username = q.username, trophies = q.trophies, isBot = false }
+end
+
+-- Form as many 4-player tables as the queue allows.
 local function processMatchmaking()
-    local i = 1
-    while i <= #queue do
-        local player = queue[i]
-        local opponent = findMatch(player)
-
-        if opponent then
-            -- Remove player from queue
-            table.remove(queue, i)
-
-            local p1, p2 = player, opponent
-            local ck1 = connKey(p1.peer)
-            local ck2 = connKey(p2.peer)
-
-            -- Skip if either player already has a live room (safety guard)
-            if not ck1 or not ck2 or rooms[ck1] or rooms[ck2] then
-                pushLog("Skipping match — peer missing connKey or already in room")
-                i = i + 1
-            else
-                -- Create rooms keyed by integer connection ID
-                rooms[ck1] = {
-                    peer       = p1.peer,
-                    partnerKey = ck2,
-                    role       = 1,
-                    player_id  = p1.player_id,
-                    username   = p1.username,
-                    trophies   = p1.trophies
-                }
-                rooms[ck2] = {
-                    peer       = p2.peer,
-                    partnerKey = ck1,
-                    role       = 2,
-                    player_id  = p2.player_id,
-                    username   = p2.username,
-                    trophies   = p2.trophies
-                }
-
-                p1.peer:send(encode("match_found", {
-                    role             = 1,
-                    opponent_name    = p2.username,
-                    opponent_trophies = p2.trophies,
-                    my_trophies      = p1.trophies
-                }))
-                p2.peer:send(encode("match_found", {
-                    role             = 2,
-                    opponent_name    = p1.username,
-                    opponent_trophies = p1.trophies,
-                    my_trophies      = p2.trophies
-                }))
-
-                pushLog("Match: " .. p1.username .. " (" .. p1.trophies .. ") vs " .. p2.username .. " (" .. p2.trophies .. ")")
-                -- Don't increment i, continue from same position
-            end
-        else
-            i = i + 1
+    while #queue >= 4 do
+        local group = findGroup()
+        if not group then return end
+        table.sort(group, function(a, b) return a > b end)   -- remove high→low
+        local entries = {}
+        for _, idx in ipairs(group) do
+            entries[#entries + 1] = toSeatEntry(table.remove(queue, idx))
         end
+        local seated = seatPlayers(entries)
+        TableManager.createTable(seated, { ranked = true })
+        pushLog("Match: " .. seated[1].username .. "+" .. seated[3].username ..
+                " vs " .. seated[2].username .. "+" .. seated[4].username)
     end
 end
 
@@ -187,15 +156,8 @@ local function evictStaleAtAddress(raw)
         end
     end
 
-    -- Notify stale room partner
-    local r = rooms[staleKey]
-    if r then
-        if r.partnerKey and rooms[r.partnerKey] then
-            pcall(function() rooms[r.partnerKey].peer:send(encode("opponent_disconnected", {})) end)
-            rooms[r.partnerKey] = nil
-        end
-        rooms[staleKey] = nil
-    end
+    -- Detach from any live table (starts the reconnect grace timer)
+    TableManager.handleDisconnect(staleKey)
 
     connKeys[raw] = nil
 end
@@ -383,6 +345,9 @@ local function handleMessage(peer, eventName, msgData)
         }))
         pushLog("Device login: " .. player.username)
 
+        -- App restart during a game: put them straight back at their table.
+        TableManager.tryReattach(player.id, peer, ck)
+
     elseif eventName == "queue_join" then
         local session = sessions[ck]
         if not session then
@@ -446,34 +411,81 @@ local function handleMessage(peer, eventName, msgData)
             return
         end
         -- Remove any existing private queue entry for this player
-        for k, entry in pairs(privateQueue) do
-            if entry.player_id == player.id then privateQueue[k] = nil end
+        for k, room in pairs(privateQueue) do
+            for i = #room.players, 1, -1 do
+                if room.players[i].player_id == player.id then table.remove(room.players, i) end
+            end
+            if #room.players == 0 then privateQueue[k] = nil end
         end
-        if privateQueue[key] and privateQueue[key].player_id ~= player.id then
-            -- Match found — create room
-            local p1 = privateQueue[key]
+
+        privateQueue[key] = privateQueue[key] or { players = {} }
+        local room = privateQueue[key]
+        if #room.players >= 4 then
+            peer:send(encode("error", {reason = "Room full"}))
+            return
+        end
+        table.insert(room.players, { peer = peer, player_id = player.id,
+                                     username = player.username, trophies = player.trophies })
+        pushLog("Private queue: " .. player.username .. " on key=" .. key .. " (" .. #room.players .. "/4)")
+
+        -- Everyone in the room sees the lobby fill up.
+        local names = {}
+        for _, p in ipairs(room.players) do names[#names + 1] = { username = p.username, trophies = p.trophies } end
+        for i, p in ipairs(room.players) do
+            pcall(function() p.peer:send(encode("private_lobby_update", {
+                players = names, count = #room.players, is_host = (i == 1) })) end)
+        end
+
+        if #room.players == 4 then
             privateQueue[key] = nil
-            local ck1 = connKey(p1.peer)
-            local ck2 = ck
-            rooms[ck1] = { peer=p1.peer, partnerKey=ck2, role=1, player_id=p1.player_id, username=p1.username, trophies=p1.trophies }
-            rooms[ck2] = { peer=peer, partnerKey=ck1, role=2, player_id=player.id, username=player.username, trophies=player.trophies }
-            p1.peer:send(encode("match_found", { role=1, opponent_name=player.username, opponent_trophies=player.trophies, my_trophies=p1.trophies }))
-            peer:send(encode("match_found", { role=2, opponent_name=p1.username, opponent_trophies=p1.trophies, my_trophies=player.trophies }))
-            pushLog("Private match: " .. p1.username .. " vs " .. player.username .. " (key=" .. key .. ")")
-        else
-            -- First player with this key — wait
-            privateQueue[key] = { peer=peer, player_id=player.id, username=player.username, trophies=player.trophies }
-            peer:send(encode("private_queue_joined", {}))
-            pushLog("Private queue: " .. player.username .. " waiting on key=" .. key)
+            local entries = {}
+            for _, p in ipairs(room.players) do
+                entries[#entries + 1] = { peer = p.peer, connKey = connKey(p.peer), player_id = p.player_id,
+                                          username = p.username, trophies = p.trophies, isBot = false }
+            end
+            TableManager.createTable(entries, { ranked = false })
+            pushLog("Private table started (key=" .. key .. ")")
+        end
+
+    elseif eventName == "private_start_bots" then
+        -- Host starts the private table early; empty seats become bots.
+        local session = sessions[ck]
+        if not session then return end
+        for key, room in pairs(privateQueue) do
+            if room.players[1] and room.players[1].player_id == session.player_id then
+                privateQueue[key] = nil
+                local entries = {}
+                for _, p in ipairs(room.players) do
+                    entries[#entries + 1] = { peer = p.peer, connKey = connKey(p.peer), player_id = p.player_id,
+                                              username = p.username, trophies = p.trophies, isBot = false }
+                end
+                for i = #entries + 1, 4 do
+                    entries[i] = { username = Bot.pickName(i), trophies = 0, isBot = true }
+                end
+                TableManager.createTable(entries, { ranked = false })
+                pushLog("Private table started with bots (key=" .. key .. ")")
+                return
+            end
         end
 
     elseif eventName == "private_queue_leave" then
-        for k, entry in pairs(privateQueue) do
-            if entry.peer == peer then
+        for k, room in pairs(privateQueue) do
+            for i = #room.players, 1, -1 do
+                if room.players[i].peer == peer then
+                    pushLog("Private queue leave: " .. room.players[i].username)
+                    table.remove(room.players, i)
+                    peer:send(encode("queue_left", {}))
+                end
+            end
+            if #room.players == 0 then
                 privateQueue[k] = nil
-                peer:send(encode("queue_left", {}))
-                pushLog("Private queue leave: " .. entry.username)
-                break
+            else
+                local names = {}
+                for _, p in ipairs(room.players) do names[#names + 1] = { username = p.username, trophies = p.trophies } end
+                for i, p in ipairs(room.players) do
+                    pcall(function() p.peer:send(encode("private_lobby_update", {
+                        players = names, count = #room.players, is_host = (i == 1) })) end)
+                end
             end
         end
 
@@ -565,44 +577,8 @@ local function handleMessage(peer, eventName, msgData)
         for _ in pairs(sessions) do count = count + 1 end
         peer:send(encode("online_count", {count = count}))
 
-    elseif eventName == "match_result" then
-        local session = sessions[ck]
-        if not session then return end
-
-        local room = rooms[ck]
-        if not room or not room.partnerKey then return end
-
-        local partnerRoom = rooms[room.partnerKey]
-        if not partnerRoom then return end
-
-        -- Sender reports whether they won; derive winner/loser from that
-        local senderWon = msgData.did_win == true
-        local winnerData, loserData
-        if senderWon then
-            winnerData = {id = room.player_id,        peer = room.peer}
-            loserData  = {id = partnerRoom.player_id, peer = partnerRoom.peer}
-        else
-            winnerData = {id = partnerRoom.player_id, peer = partnerRoom.peer}
-            loserData  = {id = room.player_id,        peer = room.peer}
-        end
-
-        db:updateTrophies(winnerData.id, 20)
-        db:updateTrophies(loserData.id, -15)
-
-        local winnerNewGold = db:updateGold(winnerData.id, 10)
-        local loserNewGold  = db:updateGold(loserData.id, 5)
-        local winnerGems    = db:getGems(winnerData.id)
-        local loserGems     = db:getGems(loserData.id)
-        local winnerXP      = db:updateXP(winnerData.id, 10)
-        local loserXP       = db:updateXP(loserData.id, 7)
-
-        if winnerData.peer then pcall(function() winnerData.peer:send(encode("currency_update", {gold = winnerNewGold, gems = winnerGems, xp = winnerXP.xp, level = winnerXP.level, unlocks = winnerXP.unlocks})) end) end
-        if loserData.peer  then pcall(function() loserData.peer:send(encode("currency_update",  {gold = loserNewGold,  gems = loserGems,  xp = loserXP.xp,  level = loserXP.level,  unlocks = loserXP.unlocks}))  end) end
-
-        pushLog("Match result: Winner +10g +10xp, Loser +5g +7xp")
-
-        rooms[room.partnerKey] = nil
-        rooms[ck] = nil
+    -- NOTE: the old client-reported "match_result" is gone — game results are
+    -- decided by the server-side engine (TableManager awards trophies/rewards).
 
     elseif eventName == "reconnect_with_token" then
         local token    = msgData.token
@@ -646,6 +622,9 @@ local function handleMessage(peer, eventName, msgData)
                 has_email_backup  = player.hasEmail or false
             }))
             pushLog("Reconnect: " .. player.username)
+
+            -- If they were seated at a live table, put them straight back in.
+            TableManager.tryReattach(player.id, peer, ck)
         else
             peer:send(encode("login_failed", {reason = "Invalid or expired token"}))
         end
@@ -789,12 +768,16 @@ local function handleMessage(peer, eventName, msgData)
         }))
         pushLog("Email login: " .. player.username)
 
-    elseif eventName == "relay" then
-        -- Forward game messages to partner (via partnerKey, not raw peer ref)
-        local room = rooms[ck]
-        if room and room.partnerKey and rooms[room.partnerKey] then
-            rooms[room.partnerKey].peer:send(encode("relay", msgData))
-        end
+    elseif eventName == "mus_action" then
+        -- Player intent for the table's engine; validated in TableManager.
+        TableManager.handleIntent(ck, msgData)
+
+    elseif eventName == "table_emote" then
+        -- Emotes / señas: thin relay to the rest of the table.
+        TableManager.handleEmote(ck, msgData)
+
+    elseif eventName == "leave_table" then
+        TableManager.leaveTable(ck)
     end
 end
 
@@ -838,16 +821,8 @@ handleDisconnect = function(peer)
         sessions[ck] = nil
     end
 
-    -- Handle room disconnect
-    local room = rooms[ck]
-    if room then
-        if room.partnerKey and rooms[room.partnerKey] then
-            pcall(function() rooms[room.partnerKey].peer:send(encode("opponent_disconnected", {})) end)
-            rooms[room.partnerKey] = nil
-        end
-        rooms[ck] = nil
-        pushLog("Player disconnected from match (role " .. tostring(room.role) .. ")")
-    end
+    -- Detach from any live table (starts the reconnect grace timer)
+    TableManager.handleDisconnect(ck)
 
     connKeys[raw] = nil
 end
@@ -865,6 +840,9 @@ function love.load()
     -- Initialize database
     db = Database.new("server/players.db")
     pushLog("Database initialized")
+
+    -- Table manager owns the per-table engines, bots, and timers
+    TableManager.init({ encode = encode, pushLog = pushLog, db = db })
 
     -- Start ENet host
     host = enet.host_create("*:"..PORT, MAX_CONNECTIONS)
@@ -890,10 +868,13 @@ function love.update(dt)
         event = host:service(0)
     end
 
-    -- Process matchmaking
-    if #queue >= 2 then
+    -- Process matchmaking (4-player tables)
+    if #queue >= 4 then
         processMatchmaking()
     end
+
+    -- Advance live tables: start delays, turn timeouts, bots, grace timers
+    TableManager.update(dt)
 end
 
 function love.draw()
@@ -905,10 +886,8 @@ function love.draw()
     lg.setFont(love.graphics.newFont(14))
     lg.print("Mus Online Server  –  port "..PORT, 10, 10)
 
-    local connected = 0
-    for _ in pairs(rooms) do connected = connected + 1 end
     local queueStr = #queue > 0 and (#queue .. " in queue") or "queue empty"
-    lg.print("Active Matches: "..math.floor(connected/2).."  |  "..queueStr, 10, 30)
+    lg.print("Active Tables: "..TableManager.count().."  |  "..queueStr, 10, 30)
 
     lg.setColor(0.7, 0.9, 0.7)
     for i, msg in ipairs(log) do
