@@ -11,7 +11,7 @@ local TableManager = {}
 
 local START_DELAY   = 2.0    -- seconds between match_found and the first deal
 local TURN_TIMEOUT  = 25.0   -- seconds before a default action is forced
-local BOT_DELAY     = 1.4    -- seconds a bot "thinks" before acting
+local BOT_DELAY     = 2.2    -- seconds a bot "thinks" before acting (paced for humans)
 local GRACE_PERIOD  = 45.0   -- seconds a disconnected player may reconnect
 local CLEANUP_DELAY = 30.0   -- seconds a finished table lingers (for late clients)
 

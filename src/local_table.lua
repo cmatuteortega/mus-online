@@ -5,7 +5,7 @@
 local MusEngine = require('shared.mus_engine')
 local Bot       = require('shared.mus_bot')
 
-local BOT_DELAY       = 1.2
+local BOT_DELAY       = 2.2   -- bots "think" so the player can follow the round
 local NEXT_HAND_DELAY = 4.0
 
 local LocalTable = {}

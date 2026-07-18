@@ -375,35 +375,50 @@ function GameScreen.new()
     function self:drawOpponent(pos, W, H, sc)
         local lg = love.graphics
         local seat = self:seatAt(pos)
-        -- Native sprite scale (45px) with an overlapping stack — crisp pixels
-        -- and a compact footprint on the sides.
-        local cardW = 45 * math.max(1, math.floor(sc + 0.5))
+        -- Same size as the player's own hand; side hands rotate ±90° so each
+        -- player's cards face the center of the table.
+        local cardW = 45 * math.max(1, math.floor((92 * sc) / 45 + 0.5))
+        local cardH = CardRenderer.height(cardW)
         local cards = self.revealed and self.revealed[seat]
-        -- Revealed hands spread wider so every card is readable.
-        local step = cards and math.floor(cardW * 0.72) or math.floor(cardW * 0.38)
-        local totalW = cardW + 3 * step
-        local x, y
+        -- Overlapped stack; spreads a little wider when revealed at showdown.
+        local step = cards and math.floor(cardW * 0.52) or math.floor(cardW * 0.32)
+        local span = cardW + 3 * step
 
+        -- Center of the first card, per-card delta along the stack, rotation.
+        local rot, cx, cy, dx, dy, nameX, nameY, nameW
         if pos == "top" then
-            x = math.floor((W - totalW) / 2)
-            y = math.floor(Constants.SAFE_INSET_TOP + 44 * sc)
+            rot = 0
+            cx = math.floor((W - span) / 2) + math.floor(cardW / 2)
+            cy = math.floor(Constants.SAFE_INSET_TOP + 44 * sc) + math.floor(cardH / 2)
+            dx, dy = step, 0
+            nameX, nameW = cx - cardW / 2 - 40 * sc, span + 80 * sc
+            nameY = cy + cardH / 2 + 4 * sc
         elseif pos == "left" then
-            x = math.floor(10 * sc)
-            y = math.floor(H * 0.28)
+            rot = math.pi / 2                     -- face right, toward the table
+            cx = math.floor(cardH / 2 + 6 * sc)   -- rotated footprint is cardH wide
+            cy = math.floor(H * 0.26) + math.floor(cardW / 2)
+            dx, dy = 0, step
+            nameX, nameW = 0, cardH + 24 * sc
+            nameY = cy + (3 * step) + cardW / 2 + 6 * sc
         else
-            x = math.floor(W - 10 * sc - totalW)
-            y = math.floor(H * 0.28)
+            rot = -math.pi / 2                    -- face left, toward the table
+            cx = math.floor(W - cardH / 2 - 6 * sc)
+            cy = math.floor(H * 0.26) + math.floor(cardW / 2)
+            dx, dy = 0, step
+            nameX, nameW = W - cardH - 24 * sc, cardH + 24 * sc
+            nameY = cy + (3 * step) + cardW / 2 + 6 * sc
         end
-        local nameY = y + CardRenderer.height(cardW) + 4 * sc
 
         for i = 1, 4 do
-            local cx = x + (i - 1) * step
+            lg.push()
+            lg.translate(cx + (i - 1) * dx, cy + (i - 1) * dy)
+            lg.rotate(rot)
             if cards and cards[i] then
-                lg.setColor(1, 1, 1, 1)
-                CardRenderer.draw(cards[i], cx, y, cardW)
+                CardRenderer.draw(cards[i], -math.floor(cardW / 2), -math.floor(cardH / 2), cardW)
             else
-                CardRenderer.drawBack(cx, y, cardW)
+                CardRenderer.drawBack(-math.floor(cardW / 2), -math.floor(cardH / 2), cardW)
             end
+            lg.pop()
         end
 
         -- Name plate: highlight on their turn; green when on my team.
@@ -415,7 +430,7 @@ function GameScreen.new()
         if isTurn then lg.setColor(1, 0.9, 0.3, 1)
         elseif sameTeam then lg.setColor(0.75, 0.95, 0.75, 1)
         else lg.setColor(0.95, 0.8, 0.75, 1) end
-        lg.printf(name, x - 20 * sc, nameY, totalW + 40 * sc, 'center')
+        lg.printf(name, nameX, nameY, nameW, 'center')
     end
 
     function self:drawCenter(W, H, sc)
