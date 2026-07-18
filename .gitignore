@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# LÖVE build files
+*.love
+
+# Temporary files
+*~
+*.swp
+*.swo

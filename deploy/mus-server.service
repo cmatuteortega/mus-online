@@ -1,0 +1,20 @@
+[Unit]
+Description=Mus Online Game Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/mus-online
+# Run with virtual display (headless Love2D)
+ExecStart=/usr/bin/xvfb-run -a love server/
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mus-server
+
+[Install]
+WantedBy=multi-user.target
