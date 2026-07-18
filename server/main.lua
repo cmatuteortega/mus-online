@@ -11,7 +11,7 @@ package.path = package.path .. ';../?.lua'
 
 local Database     = require("server.database")
 local TableManager = require("server.tables")
-local Bot          = require("server.bot")
+local Bot          = require("shared.mus_bot")
 
 local PORT    = 12346
 local MAX_CONNECTIONS = 64

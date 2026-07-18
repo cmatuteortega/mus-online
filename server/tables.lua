@@ -5,7 +5,7 @@
 -- Seats/teams: partners across — team 1 = seats {1,3}, team 2 = seats {2,4}.
 
 local MusEngine = require("shared.mus_engine")
-local Bot       = require("server.bot")
+local Bot       = require("shared.mus_bot")
 
 local TableManager = {}
 

@@ -30,16 +30,24 @@ function GameScreen.new()
     local HANDLERS = {}
 
     -- ── init ──────────────────────────────────────────────────────────────────
-    function self:init(isOnline, mySeat, socket)
+    -- Signature matches the old AutoChest screen so existing menu/lobby calls
+    -- work unchanged: sandbox (menu SANDBOX button) runs the engine locally
+    -- with 3 bots via src/local_table.lua — no server needed.
+    function self:init(isOnline, mySeat, socket, isSandbox, isTutorial)
         CardRenderer.load()
-        self.socket   = socket
-        self.mySeat   = mySeat or (_G.TableInfo and _G.TableInfo.seat) or 1
+        self.isSandbox = isSandbox or false
+        self.socket   = (not self.isSandbox) and socket or nil
+        self.mySeat   = self.isSandbox and 1
+                        or (mySeat or (_G.TableInfo and _G.TableInfo.seat) or 1)
         self.myTeam   = (self.mySeat % 2 == 1) and 1 or 2
         self.players  = {}
-        if _G.TableInfo and _G.TableInfo.players then
+        if self.isSandbox then
+            local LocalTable = require('src.local_table')
+            for _, p in ipairs(LocalTable.roster()) do self.players[p.seat] = p end
+        elseif _G.TableInfo and _G.TableInfo.players then
             for _, p in ipairs(_G.TableInfo.players) do self.players[p.seat] = p end
         end
-        self.ranked   = _G.TableInfo and _G.TableInfo.ranked or false
+        self.ranked   = (not self.isSandbox) and (_G.TableInfo and _G.TableInfo.ranked) or false
 
         self.myCards    = {}
         self.selected   = {}       -- [index] = true, for discards
@@ -61,6 +69,15 @@ function GameScreen.new()
         self._pressedBtn = nil
 
         if self.socket then self:registerCallbacks() end
+
+        if self.isSandbox then
+            local LocalTable = require('src.local_table')
+            self.localTable = LocalTable.new(function(name, data)
+                local h = HANDLERS[name]
+                if h then h(self, data or {}) end
+            end)
+            self.localTable:start()
+        end
     end
 
     -- ── networking ────────────────────────────────────────────────────────────
@@ -243,14 +260,18 @@ function GameScreen.new()
     HANDLERS.action_rejected = function(s, d) end
 
     function self:sendAction(action)
-        if self.socket then
+        if self.localTable then
+            self.localTable:send(action)
+        elseif self.socket then
             self.socket:send("mus_action", { action = action })
         end
     end
 
     -- ── update ────────────────────────────────────────────────────────────────
     function self:update(dt)
-        if self.socket then
+        if self.localTable then
+            self.localTable:update(dt)
+        elseif self.socket then
             local ok = pcall(function() self.socket:update() end)
             if not ok then self:say("Conexión perdida...") end
         end
@@ -375,15 +396,17 @@ function GameScreen.new()
             lg.printf("bote: " .. tostring(self.proposed), 0, cy + Fonts.large:getHeight() + 4 * sc, W, 'center')
         end
 
-        -- Turn line + countdown (server enforces 25s).
+        -- Turn line + countdown (server enforces 25s; no timeout in sandbox).
         if self.turn and self.turn.seats and #self.turn.seats > 0 then
-            local remain = math.max(0, 25 - (love.timer.getTime() - self.turnAt))
             local who = self.turn.seats[1]
             lg.setFont(Fonts.tiny)
             lg.setColor(0.76, 0.64, 0.54, 0.9)
             local whoTxt = self:isMyTurn() and "tu turno" or ("turno de " .. self:nameOf(who))
-            lg.printf(whoTxt .. "  ·  " .. tostring(math.ceil(remain)) .. "s",
-                0, cy - Fonts.tiny:getHeight() - 6 * sc, W, 'center')
+            if not self.isSandbox then
+                local remain = math.max(0, 25 - (love.timer.getTime() - self.turnAt))
+                whoTxt = whoTxt .. "  ·  " .. tostring(math.ceil(remain)) .. "s"
+            end
+            lg.printf(whoTxt, 0, cy - Fonts.tiny:getHeight() - 6 * sc, W, 'center')
         end
     end
 

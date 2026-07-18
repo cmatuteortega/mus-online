@@ -31,6 +31,11 @@ Done:
   contextual betting buttons from server turn options, table-talk feed,
   showdown reveal, game-over overlay, snapshot reconnect);
   `src/card_renderer.lua` draws cards (sprite files or procedural fallback).
+- **Sandbox mode**: the menu's SANDBOX button (inherited from AutoChest,
+  battle panel) launches the game screen with `isSandbox = true` —
+  `src/local_table.lua` runs the same shared engine + bot locally (you at
+  seat 1 + 3 bots), no server needed. The bot lives in `shared/mus_bot.lua`
+  so client and server share it.
 
 **Card sprites**: not in any repo — copy the `sprites/` folder from your local
 musatro project into `src/assets/cards/` (same naming: `1_oros.png` …
