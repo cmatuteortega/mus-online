@@ -54,12 +54,13 @@ end
 CardRenderer.ASPECT = SPRITE_H / SPRITE_W
 
 -- Draw a face-up card with top-left at (x, y), width w (height follows aspect).
-function CardRenderer.draw(card, x, y, w)
+-- alpha is optional (used by deal-in animations).
+function CardRenderer.draw(card, x, y, w, alpha)
     local lg = love.graphics
     local h = math.floor(w * CardRenderer.ASPECT)
     local sprite = sprites[spriteValue(card.rank) .. "_" .. card.suit]
     if sprite then
-        lg.setColor(1, 1, 1, 1)
+        lg.setColor(1, 1, 1, alpha or 1)
         lg.draw(sprite, x, y, 0, w / SPRITE_W, h / SPRITE_H)
         return h
     end

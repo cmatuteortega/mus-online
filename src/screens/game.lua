@@ -123,6 +123,18 @@ function GameScreen.new()
     HANDLERS.your_cards = function(s, d)
         s.myCards = d.cards or {}
         s.selected = {}
+        -- Deal-in animation (AutoChest style): cards slide in from off-screen
+        -- right with a staggered delay and an exponential smoother.
+        s.cardAnims = {}
+        local W = Constants.GAME_WIDTH
+        for i = 1, #s.myCards do
+            s.cardAnims[i] = {
+                x = W + 80 * Constants.SCALE, y = nil,   -- y filled on first draw
+                velX = 0, velY = 0,
+                delay = 0.05 + (i - 1) * 0.06,
+                entering = true, alpha = 0,
+            }
+        end
     end
 
     HANDLERS.turn = function(s, d)
@@ -275,6 +287,32 @@ function GameScreen.new()
             local ok = pcall(function() self.socket:update() end)
             if not ok then self:say("Conexión perdida...") end
         end
+
+        -- Card enter animation (Balatro-style exponential smoother, same
+        -- constants as the old AutoChest card hand).
+        if self.cardAnims then
+            for i, a in ipairs(self.cardAnims) do
+                if a.entering and a.tx then
+                    a.delay = a.delay - dt
+                    if a.delay <= 0 then
+                        local dx = a.tx - a.x
+                        local dy = a.ty - a.y
+                        local adt = math.min(dt, 1 / 30)
+                        a.velX = a.velX * 0.004 + dx * 480 * adt
+                        a.velY = a.velY * 0.004 + dy * 480 * adt
+                        a.x = a.x + a.velX * adt
+                        a.y = a.y + a.velY * adt
+                        a.alpha = math.min(1, a.alpha + dt * 96)
+                        local dist = math.sqrt(dx * dx + dy * dy)
+                        if dist < 1 and math.abs(a.velX) < 5 and math.abs(a.velY) < 5 then
+                            a.x, a.y = a.tx, a.ty
+                            a.entering = false
+                            a.alpha = 1
+                        end
+                    end
+                end
+            end
+        end
     end
 
     function self:isMyTurn()
@@ -337,9 +375,13 @@ function GameScreen.new()
     function self:drawOpponent(pos, W, H, sc)
         local lg = love.graphics
         local seat = self:seatAt(pos)
-        local cardW = math.floor(30 * sc)
-        local gap = math.floor(4 * sc)
-        local totalW = 4 * cardW + 3 * gap
+        -- Native sprite scale (45px) with an overlapping stack — crisp pixels
+        -- and a compact footprint on the sides.
+        local cardW = 45 * math.max(1, math.floor(sc + 0.5))
+        local cards = self.revealed and self.revealed[seat]
+        -- Revealed hands spread wider so every card is readable.
+        local step = cards and math.floor(cardW * 0.72) or math.floor(cardW * 0.38)
+        local totalW = cardW + 3 * step
         local x, y
 
         if pos == "top" then
@@ -354,10 +396,10 @@ function GameScreen.new()
         end
         local nameY = y + CardRenderer.height(cardW) + 4 * sc
 
-        local cards = self.revealed and self.revealed[seat]
         for i = 1, 4 do
-            local cx = x + (i - 1) * (cardW + gap)
+            local cx = x + (i - 1) * step
             if cards and cards[i] then
+                lg.setColor(1, 1, 1, 1)
                 CardRenderer.draw(cards[i], cx, y, cardW)
             else
                 CardRenderer.drawBack(cx, y, cardW)
@@ -424,7 +466,9 @@ function GameScreen.new()
 
     function self:drawMyHand(W, H, sc)
         local lg = love.graphics
-        local cardW = math.floor(92 * sc)
+        -- Pixel-snap: width is an integer multiple of the 45px sprite so the
+        -- pixel art scales crisply (nearest filter, no fractional pixels).
+        local cardW = 45 * math.max(1, math.floor((92 * sc) / 45 + 0.5))
         local gap = math.floor(10 * sc)
         local totalW = 4 * cardW + 3 * gap
         local x0 = math.floor((W - totalW) / 2)
@@ -435,12 +479,32 @@ function GameScreen.new()
             local x = x0 + (i - 1) * (cardW + gap)
             local y = baseY
             if self.selected[i] then y = y - math.floor(18 * sc) end
-            CardRenderer.draw(card, x, y, cardW)
-            if self.selected[i] then
-                lg.setColor(1, 0.85, 0.2, 1)
-                lg.setLineWidth(math.max(2, 2 * sc))
-                lg.rectangle("line", x, y, cardW, CardRenderer.height(cardW),
-                    math.floor(cardW * 0.09), math.floor(cardW * 0.09))
+
+            -- Enter animation: draw at the animated position until settled.
+            local a = self.cardAnims and self.cardAnims[i]
+            local drawX, drawY, alpha = x, y, 1
+            local waiting = false
+            if a then
+                a.tx, a.ty = x, y
+                if a.y == nil then a.y = y end
+                if a.entering then
+                    if a.delay > 0 then
+                        waiting = true   -- not dealt yet
+                    else
+                        drawX, drawY, alpha = math.floor(a.x), math.floor(a.y), a.alpha
+                    end
+                end
+            end
+
+            if not waiting then
+                lg.setColor(1, 1, 1, alpha)
+                CardRenderer.draw(card, drawX, drawY, cardW, alpha)
+                if self.selected[i] then
+                    lg.setColor(1, 0.85, 0.2, 1)
+                    lg.setLineWidth(math.max(2, 2 * sc))
+                    lg.rectangle("line", drawX, drawY, cardW, CardRenderer.height(cardW),
+                        math.floor(cardW * 0.09), math.floor(cardW * 0.09))
+                end
             end
             self._handRects[i] = { x = x, y = y, w = cardW, h = CardRenderer.height(cardW) }
         end
