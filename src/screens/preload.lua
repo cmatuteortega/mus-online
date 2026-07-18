@@ -1,8 +1,8 @@
 -- Mus Online – Preload Splash
--- Loads sprites incrementally (one step per frame) while a progress bar draws.
--- If tutorial_done.dat is absent → on load complete launches the tutorial
--- (offline, no auth). Otherwise authenticates in parallel and goes to menu;
--- auth failures retry up to MAX_RETRIES then show "Sin conexión" with tap-to-retry.
+-- Loads sprites incrementally (one step per frame) while a progress bar draws,
+-- authenticating in parallel; on success goes to menu. Auth failures retry up
+-- to MAX_RETRIES then show "Sin conexión" with tap-to-retry plus an offline
+-- sandbox option (play vs bots, no server).
 -- Only "no_device_profile" goes to name_entry (legitimate new-user signup path).
 
 local Screen       = require('lib.screen')
@@ -35,7 +35,7 @@ function PreloadScreen.new()
         self.elapsed        = 0
         self.TIMEOUT        = 5
         self.RETRY_DELAY    = 1.5
-        self.MAX_RETRIES    = 5
+        self.MAX_RETRIES    = 2
         self.retryTimer     = 0
         self.retryCount     = 0
         self.token          = nil
@@ -43,8 +43,10 @@ function PreloadScreen.new()
         self.authMode       = "device"
         self.advanced       = false
 
-        -- Tutorial pending → skip auth entirely; sprites alone are enough to launch tutorial.
-        self.tutorialPending = not love.filesystem.getInfo("tutorial_done.dat")
+        -- The AutoChest tutorial is gone in the mus migration: every boot goes
+        -- through auth. Offline play is reachable from the "Sin conexión"
+        -- screen (sandbox vs bots) instead.
+        self.tutorialPending = false
 
         if not self.tutorialPending then
             local raw = love.filesystem.read("session.dat") or ""
@@ -209,15 +211,6 @@ function PreloadScreen.new()
         if not self.spritesDone then return end
         local ScreenManager = require('lib.screen_manager')
 
-        if self.tutorialPending then
-            self.advanced = true
-            -- (isOnline=false, role=1, socket=false, sandbox=false, tutorial=true).
-            -- socket is `false` (not nil) because a nil in the middle of {...} args
-            -- corrupts unpack(): #args may stop short and isTutorial would never arrive.
-            ScreenManager.switch('game', false, 1, false, false, true)
-            return
-        end
-
         if self.authStatus == "success" then
             self.advanced = true
             TransitionManager.cloudCurtain(function()
@@ -311,12 +304,19 @@ function PreloadScreen.new()
             lg.setColor(1, 0.5, 0.5, 1)
             lg.printf("Sin conexión a internet",
                       0, barY + barH + 14 * sc, W, 'center')
+
+            -- Two options: retry the connection, or play offline vs bots.
+            local optY = barY + barH + 14 * sc + Fonts.medium:getHeight() + 10 * sc
             lg.setFont(Fonts.small)
             lg.setColor(0.85, 0.85, 0.9, 1)
-            lg.printf("Toca para reintentar",
-                      0, barY + barH + 14 * sc + Fonts.medium:getHeight() + 6 * sc,
-                      W, 'center')
+            lg.printf("Toca para reintentar", 0, optY, W, 'center')
+            local offY = optY + Fonts.small:getHeight() + 12 * sc
+            lg.setColor(0.6, 0.9, 0.7, 1)
+            lg.printf("Jugar OFFLINE contra bots", 0, offY, W, 'center')
+            self._offlineRect = { x = 0, y = offY - 8 * sc, w = W,
+                                  h = Fonts.small:getHeight() + 16 * sc }
         else
+            self._offlineRect = nil
             lg.setFont(Fonts.small)
             lg.setColor(0.8, 0.8, 0.85, 1)
             lg.printf(string.format("%d%%", math.floor(ratio * 100 + 0.5)),
@@ -324,12 +324,32 @@ function PreloadScreen.new()
         end
     end
 
-    function self:mousereleased(_, _, button)
-        if button == 1 then self:manualRetry() end
+    function self:launchOfflineSandbox()
+        if self.advanced then return end
+        self.advanced = true
+        self:dropClient()
+        local ScreenManager = require('lib.screen_manager')
+        -- (isOnline=false, seat=1, socket=false, sandbox=true) — same call the
+        -- menu's SANDBOX button makes.
+        ScreenManager.switch('game', false, 1, false, true)
     end
 
-    function self:touchreleased()
-        self:manualRetry()
+    function self:handleTap(x, y)
+        if self.authStatus ~= "no_network" then return end
+        local r = self._offlineRect
+        if r and x and y and x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h then
+            self:launchOfflineSandbox()
+        else
+            self:manualRetry()
+        end
+    end
+
+    function self:mousereleased(x, y, button)
+        if button == 1 then self:handleTap(x, y) end
+    end
+
+    function self:touchreleased(_, x, y)
+        self:handleTap(x, y)
     end
 
     function self:keypressed(key)
