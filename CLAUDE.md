@@ -10,27 +10,41 @@ reuse decisions. Keep both files up to date as the game is built.
 
 ---
 
-## Project Status (Phase 0 complete)
+## Project Status (Phases 0-4 core complete — pending live playtesting)
 
 Done:
-- Repo bootstrapped from AutoChest; autobattler gameplay deleted (units, grid,
-  pathfinding, battle sim, deck manager mechanics, tutorial, old game screen, spells).
-- Renamed: window/save identity `mus-online`, server identity `mus-server`,
-  port **12346**, env vars `MUS_PRODUCTION` / `MUS_SERVER_IP` / `MUS_SERVER_PORT`,
-  systemd unit `deploy/mus-server.service` (`/opt/mus-online`).
-- Boot path intact end-to-end: preload → loading (auto-auth) → name_entry → menu →
-  lobby → placeholder game screen (1v1 matchmaking still — becomes 4-player in Phase 1).
+- Phase 0: bootstrapped from AutoChest, autobattler gameplay deleted, renamed
+  (identity `mus-online`, server `mus-server`, port **12346**, `MUS_*` env vars,
+  `deploy/mus-server.service` at `/opt/mus-online`).
+- Phase 2: `shared/mus_engine.lua` — authoritative pure-Lua rules engine
+  (8-kings variant, mus/discard, Grande/Chica/Pares/Juego/Punto betting with
+  envido/raises/órdago, showdown scoring, `viewFor` hidden-info filter).
+  Tests: `lua tests/test_mus_engine.lua`.
+- Phases 1+4 (server): 4-player matchmaking (trophy range expansion kept, teams
+  balanced by trophies), `server/tables.lua` hosts one engine match per table
+  (event dispatch with per-seat privacy, turn timeouts, ranked rewards,
+  disconnect grace → snapshot reattach → bot takeover), `server/bot.lua`
+  heuristic bots, private rooms gather 4 with host "start with bots".
+  Tests: `lua tests/test_table_manager.lua` (full game with mock peers).
+- Phase 3 (client): lobby handles 4-player `match_found` and private lobby fill;
+  `src/screens/game.lua` is the mus table (hand rendering + discard selection,
+  contextual betting buttons from server turn options, table-talk feed,
+  showdown reveal, game-over overlay, snapshot reconnect);
+  `src/card_renderer.lua` draws cards (sprite files or procedural fallback).
 
-Temporary scaffolding (delete when their callers are replaced):
-- `src/unit_registry.lua`, `src/spell_registry.lua` — empty-registry shims so
-  menu/lobby/preload boot with empty Collection/Deck panels (replaced in Phases 3/5).
-- `src/deck_manager.lua` — legacy deck storage kept only because menu references it.
-- `src/screens/game.lua` — placeholder screen; real mus table arrives in Phase 3.
+**Card sprites**: not in any repo — copy the `sprites/` folder from your local
+musatro project into `src/assets/cards/` (same naming: `1_oros.png` …
+`13_bastos.png`, `back.png`). The game is fully playable without them via the
+procedural renderer.
+
+Still to do:
+- Live playtest (client boot, 4 clients + bots end-to-end) — nothing here has
+  run under real Love2D/ENet yet, only headless tests.
+- Menu: Collection/Decks panels are empty shells — replace with stats/rules/
+  cosmetics (plan Phase 5). `src/deck_manager.lua` + registry shims die then.
+- Señas via the emote panel; deal/discard animations; card flip polish.
+- Deploy to the VPS alongside AutoChest (new unit, port 12346).
 - `title.png` / `title_shadow.png` — old AutoChest logo art, needs mus art.
-
-Next: **Phase 1 — 4-player rooms** (see plan §6): 4-way matchmaking, `tables`
-structure with seats/teams, `match_found` with 4 players, lobby showing 4 slots,
-private rooms gathering 4, bot seat replacement on disconnect.
 
 ---
 
@@ -129,7 +143,18 @@ Private rooms via `private_queue_join` + room key.
 **Server messages kept as-is**: `login`/`register`/`auto_login`/`login_with_device`/
 `login_with_email`/`link_email`, `login_success`/`login_failed`, `queue_join`/
 `queue_leave`, `private_queue_join`, `reconnect_with_token`, trophy updates.
-Game-flow messages will be replaced by the mus protocol (plan §5).
+
+**Mus protocol (implemented)**:
+- Client → server: `mus_action {action={type=...}}` (types: `mus`, `no_mus`,
+  `discard {indices}`, `paso`, `envido {amount}`, `ordago`, `quiero`,
+  `no_quiero`), `table_emote {emote}`, `leave_table`, `private_start_bots`.
+- Server → client: `match_found {seat, team, ranked, players[4]}`, then
+  `game_event {name, data}` wrapping engine events: `hand_start`, `your_cards`
+  (private), `turn`, `stage`, `mus_said`, `discard_chosen`, `redrew`,
+  `declarations`, `bet_action`, `phase_result`, `score`, `showdown`,
+  `hand_end`, `game_end`, `rewards`, `state_snapshot`, `seat_replaced`,
+  `player_disconnected`, `player_reconnected`, `emote`, `timed_out`,
+  `action_rejected`. Plus `private_lobby_update {players, count, is_host}`.
 
 **Client plumbing**: `SocketManager.isHealthy()` / `.reconnect(onSuccess, onFailure)`;
 menu pumps `_G.GameSocket:update()` every frame (ENet keepalive); `AudioManager`

@@ -35,9 +35,13 @@ function LobbyScreen.new()
         self.status = "queueing"  -- queueing | matched | error
         self.statusMsg = "Finding match..."
         self.queueStartTime = love.timer.getTime()
-        self.playerRole = nil
-        self.opponentName = nil
-        self.opponentTrophies = nil
+        self.mySeat = nil
+        self.myTeam = nil
+        self.tablePlayers = nil
+        self.tableRanked = false
+        self.privateCount = nil
+        self.privatePlayers = nil
+        self.privateIsHost = false
         self.myTrophies = _G.PlayerData and _G.PlayerData.trophies or 0
 
         -- Cancel button hit rect
@@ -224,16 +228,25 @@ function LobbyScreen.new()
         end)
 
         self._cb_matchFound = self.client:on("match_found", function(data)
-            self.playerRole = data.role
-            self.opponentName = data.opponent_name
-            self.opponentTrophies = data.opponent_trophies
-            self.myTrophies = data.my_trophies
+            -- 4-player table: seat 1-4, team 1 = seats 1,3 / team 2 = seats 2,4
+            self.mySeat      = data.seat
+            self.myTeam      = data.team
+            self.tablePlayers = data.players or {}
+            self.tableRanked  = data.ranked or false
+            self.myTrophies  = data.my_trophies or self.myTrophies
             self.status = "matched"
             self.statusMsg = "Match found!"
-            print("Match found: vs " .. self.opponentName .. " (" .. self.opponentTrophies .. " trophies)")
+            print("Match found: seat " .. tostring(data.seat) .. " of 4")
 
             -- Show match info briefly before launching
-            self.matchTimer = 1.2
+            self.matchTimer = 1.6
+        end)
+
+        self._cb_privateLobby = self.client:on("private_lobby_update", function(data)
+            self.status = "queueing"
+            self.privateCount   = data.count or 1
+            self.privatePlayers = data.players or {}
+            self.privateIsHost  = data.is_host or false
         end)
 
         self._cb_oppDisconn = self.client:on("opponent_disconnected", function()
@@ -316,20 +329,19 @@ function LobbyScreen.new()
                 -- Update player trophies globally (server sent latest)
                 _G.PlayerData.trophies = self.myTrophies
 
-                -- Store opponent info globally for game screen
-                _G.OpponentData = {
-                    name = self.opponentName,
-                    trophies = self.opponentTrophies
+                -- Store table info globally for the game screen
+                _G.TableInfo = {
+                    seat    = self.mySeat,
+                    team    = self.myTeam,
+                    players = self.tablePlayers,
+                    ranked  = self.tableRanked,
                 }
 
-                -- Update perspective constant
-                Constants.PERSPECTIVE = self.playerRole
-
-                local role   = self.playerRole
+                local seat   = self.mySeat
                 local client = self.client
                 TransitionManager.cloudCurtain(function()
                     local ScreenManager = require('lib.screen_manager')
-                    ScreenManager.switch('game', true, role, client)
+                    ScreenManager.switch('game', true, seat, client)
                 end)
             end
         end
@@ -535,7 +547,17 @@ function LobbyScreen.new()
             if self.roomKey then
                 lg.setFont(Fonts.tiny)
                 lg.setColor(0.4, 0.4, 0.4, 0.5)
-                lg.printf("Room: " .. self.roomKey, 0, infoY + Fonts.small:getHeight() + 8 * sc, W, 'center')
+                local roomLine = "Room: " .. self.roomKey
+                if self.privateCount then
+                    roomLine = roomLine .. "   ·   " .. self.privateCount .. "/4 players"
+                end
+                lg.printf(roomLine, 0, infoY + Fonts.small:getHeight() + 8 * sc, W, 'center')
+                if self.privatePlayers and #self.privatePlayers > 0 then
+                    local names = {}
+                    for _, p in ipairs(self.privatePlayers) do names[#names + 1] = p.username end
+                    lg.printf(table.concat(names, "  ·  "), 0,
+                        infoY + Fonts.small:getHeight() + 8 * sc + Fonts.tiny:getHeight() + 6 * sc, W, 'center')
+                end
             end
 
         elseif self.status == "matched" then
@@ -543,13 +565,24 @@ function LobbyScreen.new()
             lg.setColor(0.6, 0.6, 0.7, 1)
             lg.printf("Match Found!", 0, infoY, W, 'center')
 
-            lg.setFont(Fonts.large)
+            -- Show the two teams: you+partner vs the other pair.
+            local mates, rivals = {}, {}
+            for _, p in ipairs(self.tablePlayers or {}) do
+                local label = p.username .. (p.seat == self.mySeat and " (you)" or "")
+                if p.team == self.myTeam then mates[#mates + 1] = label
+                else rivals[#rivals + 1] = label end
+            end
+            lg.setFont(Fonts.medium)
             lg.setColor(1, 1, 1, 1)
-            lg.printf("vs " .. self.opponentName, 0, infoY + Fonts.small:getHeight() + 10 * sc, W, 'center')
-
+            local y1 = infoY + Fonts.small:getHeight() + 10 * sc
+            lg.printf(table.concat(mates, " + "), 0, y1, W, 'center')
             lg.setFont(Fonts.small)
             lg.setColor(0.9, 0.85, 0.3, 1)
-            lg.printf(self.opponentTrophies .. " trophies", 0, infoY + Fonts.small:getHeight() + 10 * sc + Fonts.large:getHeight() + 8 * sc, W, 'center')
+            lg.printf("vs", 0, y1 + Fonts.medium:getHeight() + 6 * sc, W, 'center')
+            lg.setFont(Fonts.medium)
+            lg.setColor(1, 1, 1, 1)
+            lg.printf(table.concat(rivals, " + "), 0,
+                y1 + Fonts.medium:getHeight() + 6 * sc + Fonts.small:getHeight() + 6 * sc, W, 'center')
 
         elseif self.status == "error" then
             lg.setFont(Fonts.medium)
@@ -598,8 +631,29 @@ function LobbyScreen.new()
             lg.pop()
 
             self._cancelBtnRect = { x = btnX, y = sbtnY - maxFloat, w = btnW, h = sbtnH + maxFloat }
+
+            -- Private-room host: a second button to start now, filling with bots
+            if self.roomKey and self.privateIsHost and self.status == "queueing" then
+                local bbW = math.floor(230 * sc)
+                local bbH = math.floor(52 * sc)
+                local bbX = math.floor(cx - bbW / 2)
+                local bbY = sbtnY - bbH - math.floor(16 * sc)
+                lg.setColor(0.031, 0.078, 0.118, 1)
+                roundedRect(bbX + math.floor(2 * sc), bbY + math.floor(4 * sc), bbW, bbH, 8, sc)
+                lg.setColor(0.125, 0.324, 0.310, 1)
+                roundedRect(bbX, bbY, bbW, bbH, 8, sc)
+                lg.setColor(0.225, 0.424, 0.410, 1)
+                roundedRectLine(bbX, bbY, bbW, bbH, 8, sc, 2 * sc)
+                lg.setFont(Fonts.small)
+                lg.setColor(1, 1, 1, 1)
+                lg.printf("Start with bots", bbX, textCY(Fonts.small, bbY, bbH), bbW, 'center')
+                self._botsBtnRect = { x = bbX, y = bbY, w = bbW, h = bbH }
+            else
+                self._botsBtnRect = nil
+            end
         else
             self._cancelBtnRect = nil
+            self._botsBtnRect = nil
         end
 
         -- ── Bottom info strip ────────────────────────────────────────────────
@@ -641,6 +695,14 @@ function LobbyScreen.new()
     function self:mousereleased(x, y, button)
         if button ~= 1 then return end
         self._cancelSpring.pressed = false
+        if self._botsBtnRect and self.client then
+            local r = self._botsBtnRect
+            if x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h then
+                self.client:send("private_start_bots", {})
+                self._botsBtnRect = nil
+                return
+            end
+        end
         if self._cancelPressedInside and self._cancelBtnRect then
             local r = self._cancelBtnRect
             if x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h then
