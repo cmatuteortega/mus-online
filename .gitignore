@@ -8,3 +8,7 @@
 *~
 *.swp
 *.swo
+
+# Server runtime files (never tracked; keeps git-pull deploys clean)
+server/players.db
+server/matchmaking.log
