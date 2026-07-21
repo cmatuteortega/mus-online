@@ -620,8 +620,8 @@ function Database:updateTrophies(playerId, delta)
     return 0
 end
 
--- Add XP to a player, handling level-ups and unlock rewards.
--- Returns {xp, level, unlocks} where unlocks is the full unlock state (or nil if unchanged).
+-- Add XP to a player, handling level-ups. Level-ups only bump the level
+-- counter — no card unlocks are granted. Returns {xp, level}.
 function Database:updateXP(playerId, amount)
     local stmt = self.db:prepare("SELECT xp, level FROM players WHERE id = ?")
     stmt:bind_values(playerId)
@@ -632,7 +632,6 @@ function Database:updateXP(playerId, amount)
     end
     stmt:finalize()
 
-    local oldLevel = level
     xp = xp + amount
 
     -- Level-up loop: xpNeeded = 30 + floor((level-1)/10) * 5
@@ -649,36 +648,7 @@ function Database:updateXP(playerId, amount)
     stmt:step()
     stmt:finalize()
 
-    -- Compute unlock rewards for each new level reached
-    local unlocks = nil
-    if level > oldLevel then
-        unlocks = self:getUnlocks(playerId)
-        if not unlocks then
-            unlocks = self:migrateUnlocks(playerId)
-        end
-        -- Ensure pending_rewards exists
-        if not unlocks.pending_rewards then unlocks.pending_rewards = {} end
-
-        for lvl = oldLevel + 1, level do
-            local rng = function(n) return math.random(n) end
-            local reward = computeLevelReward(lvl, unlocks, rng)
-            if reward then
-                -- Apply card grant immediately
-                if reward.type == "new_unit" then
-                    unlocks.cards[reward.unit] = 1
-                elseif reward.type == "card" then
-                    unlocks.cards[reward.unit] = (unlocks.cards[reward.unit] or 0) + 1
-                end
-                -- Add to pending for client reveal animation
-                reward.level = lvl
-                table.insert(unlocks.pending_rewards, reward)
-            end
-        end
-
-        self:setUnlocks(playerId, unlocks)
-    end
-
-    return { xp = xp, level = level, unlocks = unlocks }
+    return { xp = xp, level = level }
 end
 
 -- Add gold to a player (delta can be negative)

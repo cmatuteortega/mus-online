@@ -42,14 +42,34 @@ function Constants.toVisualRow(row)
     return row
 end
 
--- Colors
+-- Project palette. Every colour in the game is limited to these 12 values.
+-- UI code now sources colours from this palette directly (the global
+-- palette-snap shader in src/palette_shader.lua is disabled via
+-- PaletteShader.enabled = false; flip it back on to re-clamp the whole frame).
+-- Prefer picking UI colours from here so buttons/text stay on-palette.
+Constants.PALETTE = {
+    OFFWHITE  = {0xdf/255, 0xe6/255, 0xe0/255, 1},  -- #dfe6e0
+    GOLD      = {0xd9/255, 0xc2/255, 0x77/255, 1},  -- #d9c277
+    TERRACOTTA= {0xc1/255, 0x7b/255, 0x5c/255, 1},  -- #c17b5c
+    ROSE      = {0x85/255, 0x44/255, 0x4a/255, 1},  -- #85444a
+    PLUM      = {0x4a/255, 0x36/255, 0x3c/255, 1},  -- #4a363c
+    OLIVE     = {0x9b/255, 0xa1/255, 0x5f/255, 1},  -- #9ba15f
+    GREEN     = {0x59/255, 0x6e/255, 0x47/255, 1},  -- #596e47
+    DARKGREEN = {0x38/255, 0x45/255, 0x3a/255, 1},  -- #38453a
+    LIGHTBLUE = {0xa9/255, 0xbb/255, 0xcc/255, 1},  -- #a9bbcc
+    BLUE      = {0x76/255, 0x87/255, 0xab/255, 1},  -- #7687ab
+    DARKBLUE  = {0x44/255, 0x4a/255, 0x65/255, 1},  -- #444a65
+    NEARBLACK = {0x22/255, 0x22/255, 0x28/255, 1},  -- #222228
+}
+
+-- Colors (all drawn from the palette above)
 Constants.COLORS = {
-    BACKGROUND = {0.1, 0.1, 0.15, 1},
-    GRID_LINE = {0.3, 0.3, 0.35, 1},
-    GRID_BG = {0.15, 0.15, 0.2, 1},
+    BACKGROUND = Constants.PALETTE.DARKGREEN,       -- universal green background
+    GRID_LINE = Constants.PALETTE.DARKBLUE,
+    GRID_BG = Constants.PALETTE.NEARBLACK,
     -- Chess pattern colors
-    CHESS_LIGHT = {0x26/255, 0x38/255, 0x4D/255, 1},  -- #26384D
-    CHESS_DARK = {0x16/255, 0x2A/255, 0x3D/255, 1},   -- #162A3D
+    CHESS_LIGHT = Constants.PALETTE.GREEN,
+    CHESS_DARK = Constants.PALETTE.DARKGREEN,
     CELL_HIGHLIGHT = {1, 1, 1, 0.2},
 }
 

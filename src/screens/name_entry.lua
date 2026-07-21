@@ -9,6 +9,7 @@ local Constants = require('src.constants')
 local config    = require('src.config')
 local sock      = require('lib.sock')
 local json      = require('lib.json')
+local Locale    = require('src.locale')
 
 local MAX_NAME_LEN = 16
 
@@ -34,7 +35,7 @@ function NameEntryScreen.new()
         self._backBtnRect     = nil
 
         self.status = "connecting"
-        self.statusMessage = "Connecting to server..."
+        self.statusMessage = Locale.t("name.connecting")
 
         self.client = nil
 
@@ -63,19 +64,19 @@ function NameEntryScreen.new()
 
         self.client:on("connect", function()
             self.status = "ready"
-            self.statusMessage = "What's your name?"
+            self.statusMessage = Locale.t("name.whats_your_name")
         end)
 
         self.client:on("disconnect", function()
             if self.status ~= "logged_in" then
                 self.status = "error"
-                self.statusMessage = "Disconnected from server"
+                self.statusMessage = Locale.t("common.disconnected")
             end
         end)
 
         self.client:on("login_success", function(data)
             self.status = "logged_in"
-            self.statusMessage = "Welcome, " .. tostring(data.username) .. "!"
+            self.statusMessage = Locale.t("name.welcome", tostring(data.username))
 
             if data.token and data.token ~= "" then
                 love.filesystem.write("session.dat", json.encode({
@@ -111,17 +112,17 @@ function NameEntryScreen.new()
 
         self.client:on("register_failed", function(data)
             self.status = "error"
-            self.statusMessage = (data and data.reason) or "Registration failed"
+            self.statusMessage = (data and data.reason) or Locale.t("name.register_failed")
         end)
 
         self.client:on("login_failed", function(data)
             if self.mode == "restore" then
-                self._restoreStatus = "Invalid email or password"
+                self._restoreStatus = Locale.t("name.invalid_login")
                 self.status = "ready"
-                self.statusMessage = "What's your name?"
+                self.statusMessage = Locale.t("name.whats_your_name")
             else
                 self.status = "error"
-                self.statusMessage = (data and data.reason) or "Login failed"
+                self.statusMessage = (data and data.reason) or Locale.t("name.login_failed")
             end
         end)
 
@@ -169,11 +170,11 @@ function NameEntryScreen.new()
 
         lg.setFont(Fonts.small)
         if self.status == "error" then
-            lg.setColor(1, 0.4, 0.4, 1)
+            lg.setColor(0.757, 0.482, 0.361, 1)
         elseif self.status == "connecting" then
             lg.setColor(0.7, 0.7, 0.7, 1)
         else
-            lg.setColor(0.6, 1, 0.6, 1)
+            lg.setColor(0.608, 0.631, 0.373, 1)
         end
         lg.printf(self.statusMessage, 0, H * 0.10 + Fonts.large:getHeight() + 20 * sc, W, 'center')
 
@@ -196,12 +197,12 @@ function NameEntryScreen.new()
         local nameY = H * 0.38
         lg.setFont(Fonts.small)
         lg.setColor(0.65, 0.65, 0.7, 1)
-        lg.print("Name", fieldX, nameY - Fonts.small:getHeight() - labelGap)
+        lg.print(Locale.t("name.name"), fieldX, nameY - Fonts.small:getHeight() - labelGap)
 
         local active = (self.activeField == "name")
-        lg.setColor(active and {0.22, 0.22, 0.32, 1} or {0.16, 0.16, 0.22, 1})
+        lg.setColor(active and {0.267, 0.290, 0.396, 1} or {0.133, 0.133, 0.157, 1})
         roundedRect(fieldX, nameY, fieldW, fieldH, 5, sc)
-        lg.setColor(active and {0.5, 0.5, 0.8, 1} or {0.32, 0.32, 0.42, 1})
+        lg.setColor(active and {0.663, 0.733, 0.800, 1} or {0.463, 0.529, 0.671, 1})
         roundedRectLine(fieldX, nameY, fieldW, fieldH, 5, sc, 2 * sc)
 
         lg.setFont(Fonts.small)
@@ -226,19 +227,19 @@ function NameEntryScreen.new()
         local canSubmit = #self.nameText > 0
 
         if canSubmit then
-            lg.setColor(0.15, 0.45, 0.25, 1)
+            lg.setColor(0.608, 0.631, 0.373, 1)
             roundedRect(btnX, btnY, btnW, btnH, 8, sc)
-            lg.setColor(0.25, 0.65, 0.40, 1)
+            lg.setColor(0.851, 0.761, 0.467, 1)
             roundedRectLine(btnX, btnY, btnW, btnH, 8, sc, 2 * sc)
         else
-            lg.setColor(0.12, 0.12, 0.18, 1)
+            lg.setColor(0.133, 0.133, 0.157, 1)
             roundedRect(btnX, btnY, btnW, btnH, 8, sc)
-            lg.setColor(0.22, 0.22, 0.30, 1)
+            lg.setColor(0.267, 0.290, 0.396, 1)
             roundedRectLine(btnX, btnY, btnW, btnH, 8, sc, 2 * sc)
         end
         lg.setFont(Fonts.medium)
         lg.setColor(canSubmit and {1, 1, 1, 1} or {0.4, 0.4, 0.45, 1})
-        lg.printf("Play!", btnX, textCY(Fonts.medium, btnY, btnH), btnW, 'center')
+        lg.printf(Locale.t("name.play"), btnX, textCY(Fonts.medium, btnY, btnH), btnW, 'center')
         self._playBtnRect = canSubmit and {x = btnX, y = btnY, w = btnW, h = btnH} or nil
 
         -- Restore Account secondary button
@@ -246,13 +247,13 @@ function NameEntryScreen.new()
         local restH = 36 * sc
         local restX = cx - restW / 2
         local restY = btnY + btnH + 18 * sc
-        lg.setColor(0.10, 0.10, 0.16, 1)
+        lg.setColor(0.133, 0.133, 0.157, 1)
         roundedRect(restX, restY, restW, restH, 6, sc)
-        lg.setColor(0.22, 0.22, 0.32, 1)
+        lg.setColor(0.267, 0.290, 0.396, 1)
         roundedRectLine(restX, restY, restW, restH, 6, sc, math.max(1, math.floor(sc)))
         lg.setFont(Fonts.small)
-        lg.setColor(0.5, 0.5, 0.7, 1)
-        lg.printf("Restore Account", restX, textCY(Fonts.small, restY, restH), restW, 'center')
+        lg.setColor(0.463, 0.529, 0.671, 1)
+        lg.printf(Locale.t("name.restore"), restX, textCY(Fonts.small, restY, restH), restW, 'center')
         self._restoreBtnRect = {x = restX, y = restY, w = restW, h = restH}
     end
 
@@ -260,7 +261,7 @@ function NameEntryScreen.new()
         -- Error / status message
         if self._restoreStatus then
             lg.setFont(Fonts.small)
-            lg.setColor(1, 0.4, 0.4, 1)
+            lg.setColor(0.757, 0.482, 0.361, 1)
             lg.printf(self._restoreStatus, 0, H * 0.26, W, 'center')
         end
 
@@ -274,16 +275,16 @@ function NameEntryScreen.new()
         local emailY = H * 0.35
         lg.setFont(Fonts.small)
         lg.setColor(0.65, 0.65, 0.7, 1)
-        lg.print("Email", fieldX, emailY - Fonts.small:getHeight() - labelGap)
+        lg.print(Locale.t("settings.email"), fieldX, emailY - Fonts.small:getHeight() - labelGap)
 
         local emailActive = (self.activeField == "email")
-        lg.setColor(emailActive and {0.22, 0.22, 0.32, 1} or {0.16, 0.16, 0.22, 1})
+        lg.setColor(emailActive and {0.267, 0.290, 0.396, 1} or {0.133, 0.133, 0.157, 1})
         roundedRect(fieldX, emailY, fieldW, fieldH, 5, sc)
-        lg.setColor(emailActive and {0.5, 0.5, 0.8, 1} or {0.32, 0.32, 0.42, 1})
+        lg.setColor(emailActive and {0.663, 0.733, 0.800, 1} or {0.463, 0.529, 0.671, 1})
         roundedRectLine(fieldX, emailY, fieldW, fieldH, 5, sc, 2 * sc)
         lg.setFont(Fonts.small)
         lg.setColor(#self.emailText == 0 and {0.4, 0.4, 0.45, 1} or {1, 1, 1, 1})
-        local emailDisplay = #self.emailText == 0 and "your@email.com" or self.emailText
+        local emailDisplay = #self.emailText == 0 and Locale.t("name.email_hint") or self.emailText
         lg.print(emailDisplay, fieldX + textPad, textCY(Fonts.small, emailY, fieldH))
         self._emailRect = {x = fieldX, y = emailY, w = fieldW, h = fieldH}
 
@@ -291,16 +292,16 @@ function NameEntryScreen.new()
         local pwY = emailY + fieldH + 18 * sc
         lg.setFont(Fonts.small)
         lg.setColor(0.65, 0.65, 0.7, 1)
-        lg.print("Password", fieldX, pwY - Fonts.small:getHeight() - labelGap)
+        lg.print(Locale.t("name.password"), fieldX, pwY - Fonts.small:getHeight() - labelGap)
 
         local pwActive = (self.activeField == "password")
-        lg.setColor(pwActive and {0.22, 0.22, 0.32, 1} or {0.16, 0.16, 0.22, 1})
+        lg.setColor(pwActive and {0.267, 0.290, 0.396, 1} or {0.133, 0.133, 0.157, 1})
         roundedRect(fieldX, pwY, fieldW, fieldH, 5, sc)
-        lg.setColor(pwActive and {0.5, 0.5, 0.8, 1} or {0.32, 0.32, 0.42, 1})
+        lg.setColor(pwActive and {0.663, 0.733, 0.800, 1} or {0.463, 0.529, 0.671, 1})
         roundedRectLine(fieldX, pwY, fieldW, fieldH, 5, sc, 2 * sc)
         lg.setFont(Fonts.small)
         lg.setColor(#self.passwordText == 0 and {0.4, 0.4, 0.45, 1} or {1, 1, 1, 1})
-        local pwDisplay = #self.passwordText == 0 and "password" or string.rep("*", #self.passwordText)
+        local pwDisplay = #self.passwordText == 0 and Locale.t("name.password_hint") or string.rep("*", #self.passwordText)
         lg.print(pwDisplay, fieldX + textPad, textCY(Fonts.small, pwY, fieldH))
         self._passwordRect = {x = fieldX, y = pwY, w = fieldW, h = fieldH}
 
@@ -311,19 +312,19 @@ function NameEntryScreen.new()
         local subBtnX = cx - subBtnW / 2
         local subBtnY = pwY + fieldH + 30 * sc
         if canSubmit then
-            lg.setColor(0.15, 0.35, 0.55, 1)
+            lg.setColor(0.463, 0.529, 0.671, 1)
             roundedRect(subBtnX, subBtnY, subBtnW, subBtnH, 8, sc)
-            lg.setColor(0.25, 0.55, 0.75, 1)
+            lg.setColor(0.663, 0.733, 0.800, 1)
             roundedRectLine(subBtnX, subBtnY, subBtnW, subBtnH, 8, sc, 2 * sc)
         else
-            lg.setColor(0.12, 0.12, 0.18, 1)
+            lg.setColor(0.133, 0.133, 0.157, 1)
             roundedRect(subBtnX, subBtnY, subBtnW, subBtnH, 8, sc)
-            lg.setColor(0.22, 0.22, 0.30, 1)
+            lg.setColor(0.267, 0.290, 0.396, 1)
             roundedRectLine(subBtnX, subBtnY, subBtnW, subBtnH, 8, sc, 2 * sc)
         end
         lg.setFont(Fonts.medium)
         lg.setColor(canSubmit and {1, 1, 1, 1} or {0.4, 0.4, 0.45, 1})
-        lg.printf("Recover", subBtnX, textCY(Fonts.medium, subBtnY, subBtnH), subBtnW, 'center')
+        lg.printf(Locale.t("name.recover"), subBtnX, textCY(Fonts.medium, subBtnY, subBtnH), subBtnW, 'center')
         self._submitBtnRect = canSubmit and {x = subBtnX, y = subBtnY, w = subBtnW, h = subBtnH} or nil
 
         -- Back link
@@ -333,7 +334,7 @@ function NameEntryScreen.new()
         local backY = subBtnY + subBtnH + 14 * sc
         lg.setFont(Fonts.small)
         lg.setColor(0.5, 0.5, 0.6, 1)
-        lg.printf("< Back", backX, textCY(Fonts.small, backY, backH), backW, 'center')
+        lg.printf(Locale.t("common.back"), backX, textCY(Fonts.small, backY, backH), backW, 'center')
         self._backBtnRect = {x = backX, y = backY, w = backW, h = backH}
     end
 
@@ -494,7 +495,7 @@ function NameEntryScreen.new()
         if not self.client or self.status == "connecting" then return end
 
         self.status = "connecting"
-        self.statusMessage = "Creating your profile..."
+        self.statusMessage = Locale.t("name.creating")
         self.client:send("register_device", {
             username  = self.nameText,
             device_id = _G.DeviceId or ""
@@ -505,16 +506,16 @@ function NameEntryScreen.new()
         if not self.client or self.status == "connecting" then return end
         local email = self.emailText:match("^%s*(.-)%s*$"):lower()
         if not email:match("^[^@]+@[^@]+%.[^@]+$") then
-            self._restoreStatus = "Invalid email address"
+            self._restoreStatus = Locale.t("name.invalid_email")
             return
         end
         if #self.passwordText < 1 then
-            self._restoreStatus = "Enter your password"
+            self._restoreStatus = Locale.t("name.enter_password")
             return
         end
         self._restoreStatus  = nil
         self.status          = "connecting"
-        self.statusMessage   = "Restoring account..."
+        self.statusMessage   = Locale.t("name.restoring")
         self.client:send("login_with_email", {
             email     = email,
             password  = self.passwordText,

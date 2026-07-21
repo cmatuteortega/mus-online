@@ -45,8 +45,11 @@ procedural renderer.
 Still to do:
 - Live playtest (client boot, 4 clients + bots end-to-end) — nothing here has
   run under real Love2D/ENet yet, only headless tests.
-- Menu: Collection/Decks panels are empty shells — replace with stats/rules/
-  cosmetics (plan Phase 5). `src/deck_manager.lua` + registry shims die then.
+- Menu is now a single battle screen (no tabs): PLAY / SANDBOX / private-room
+  toggle + a left-side ranking button that opens the leaderboard popup. The old
+  Shop panel (daily chest, card trade) and swipe tabs were removed. The
+  `deck_manager.lua` / `unit_registry.lua` / `spell_registry.lua` shims are no
+  longer required by the menu and can be deleted once nothing else references them.
 - Señas via the emote panel; deal/discard animations; card flip polish.
 - Deploy to the VPS alongside AutoChest (new unit, port 12346).
 - `title.png` / `title_shadow.png` — old AutoChest logo art, needs mus art.
@@ -68,16 +71,21 @@ Still to do:
 
 ## How to Run
 
+**Client (connects to the cloud server by default):**
+```bash
+love .                   # client → cloud server 75.119.142.247:12346 (DEFAULT)
+./play-online.sh         # same, plus optional MUS_SERVER_IP/PORT overrides
+```
+
 **Local Development (localhost server):**
 ```bash
-love .                   # client (connects to localhost:12346)
+MUS_DEV=true love .      # client → localhost:12346 (opt-in dev mode)
 love server/             # local dev server
 ```
 
-**Production (cloud server at 75.119.142.247:12346):**
-```bash
-./play-online.sh         # client (sets MUS_PRODUCTION=true)
-```
+Production is the default in `src/config.lua` — a plain `love .` hits the VPS.
+Set `MUS_DEV=true` to point at a local `love server/`, or `MUS_SERVER_IP` /
+`MUS_SERVER_PORT` to target a different box.
 
 **Cloud Server:**
 ```bash
@@ -113,6 +121,8 @@ mus-online/
     ├── config.lua           # Server address config (dev/production)
     ├── constants.lua        # 540×960 canvas, scaling helpers
     ├── audio_manager.lua    # Music/SFX singleton with persistent settings
+    ├── locale.lua           # i18n: English/Spanish string tables, persisted to
+    │                        #   locale.json; `Locale.t(key, ...)`, live-switchable
     ├── socket_manager.lua   # Socket health check + async token reconnection
     ├── transition_manager.lua # Screen transitions (cloud curtain)
     ├── palette_shader.lua   # 8-color palette-snap shader (menu/lobby sprites)
@@ -125,8 +135,8 @@ mus-online/
         ├── preload.lua      # Splash + asset preload (load steps empty for now)
         ├── loading.lua      # Auto-auth (session.dat token, 5s timeout)
         ├── name_entry.lua   # Account creation / device login / email backup
-        ├── menu.lua         # 5-panel swipe UI (Collection/Decks panels are empty
-        │                    #   shells — replaced with mus content in Phase 5)
+        ├── menu.lua         # Single battle screen: PLAY / SANDBOX / private-room
+        │                    #   toggle + ranking button → leaderboard popup
         ├── lobby.lua        # Matchmaking lobby (still 1v1 — Phase 1 makes it 4p)
         └── game.lua         # PLACEHOLDER — real mus table in Phase 3
 ```
@@ -134,6 +144,13 @@ mus-online/
 ---
 
 ## What Carried Over From AutoChest (works today, don't rebuild)
+
+**Language (English / Spanish)**: `src/locale.lua` holds both string tables and a
+persisted choice (`locale.json`, default English). Every screen looks strings up
+via `Locale.t(key, ...)` at draw time, so the EN/ES toggle in the menu's SETTINGS
+overlay switches the whole UI live. `GameSettings.summary()` and the game-table
+labels/feed route through it too. Keep the `en` and `es` key sets identical (a
+missing key silently falls back to English).
 
 **Auth flow**: `preload` → `loading` reads `session.dat`; token → `auto_login` /
 `login_with_device`; `name_entry` handles registration, device login, and
@@ -149,12 +166,26 @@ Private rooms via `private_queue_join` + room key.
 `login_with_email`/`link_email`, `login_success`/`login_failed`, `queue_join`/
 `queue_leave`, `private_queue_join`, `reconnect_with_token`, trophy updates.
 
+**Game-mode settings (implemented)**: players tweak rules before queuing via the
+menu's "Reglas" modal (tap the summary pill above PLAY). Three knobs live in
+`src/game_settings.lua` (persisted to `game_settings.json`): `reyes8`
+(4 vs 8 kings), `emotes` (on/off), `bestOf` (1/3/5 sets to 40). **Base queue =
+4 kings, no emotes, best of 3.** Settings ride along on `queue_join` /
+`private_queue_join`; the server sanitizes them, matches only same-settings
+players (settings key + trophy range), and passes them to the table. Best-of-N
+is a table-level loop (each set is one engine match to 40; server tracks
+`setsWon`, emits `set_result`, starts a fresh match until a team reaches the
+majority). Emotes are gated server-side by the table's setting.
+
 **Mus protocol (implemented)**:
 - Client → server: `mus_action {action={type=...}}` (types: `mus`, `no_mus`,
   `discard {indices}`, `paso`, `envido {amount}`, `ordago`, `quiero`,
   `no_quiero`), `table_emote {emote}`, `leave_table`, `private_start_bots`.
-- Server → client: `match_found {seat, team, ranked, players[4]}`, then
-  `game_event {name, data}` wrapping engine events: `hand_start`, `your_cards`
+  `queue_join` / `private_queue_join` now also carry `settings {reyes8, emotes, bestOf}`.
+- Server → client: `match_found {seat, team, ranked, players[4], settings}`, then
+  `game_event {name, data}` wrapping engine events: `set_result`
+  `{set_winner, sets_won, sets_needed, best_of, series_over}` (between/after sets),
+  `hand_start`, `your_cards`
   (private), `turn`, `stage`, `mus_said`, `discard_chosen`, `redrew`,
   `declarations`, `bet_action`, `phase_result`, `score`, `showdown`,
   `hand_end`, `game_end`, `rewards`, `state_snapshot`, `seat_replaced`,

@@ -67,10 +67,12 @@ local function resetTurnClock(t)
     t.botClock  = BOT_DELAY
 end
 
+local NEXT_SET_DELAY = 6.0   -- pause on the set-result banner before the next set
+
 local function afterEngineStep(t)
     resetTurnClock(t)
     if t.match and t.match.winner then
-        TableManager._finishGame(t)
+        TableManager._finishSet(t)
     elseif t.match and not t.match.hand.betting and t.match.hand.stage == "showdown" then
         -- Hand over: deal the next one after a pause.
         t.nextHandClock = 6.0
@@ -81,12 +83,27 @@ end
 
 -- players: array of exactly 4 entries { peer|nil, connKey|nil, player_id|nil,
 -- username, trophies, isBot }. Ordered by seat (1..4).
+-- Base rules (4 kings, no emotes, best of 3) when a table is formed without
+-- explicit settings — matches the client's base queue.
+local function normalizeSettings(s)
+    s = s or {}
+    local bestOf = s.bestOf
+    if bestOf ~= 1 and bestOf ~= 3 and bestOf ~= 5 then bestOf = 3 end
+    return { reyes8 = s.reyes8 == true, emotes = s.emotes == true, bestOf = bestOf }
+end
+
 function TableManager.createTable(players, opts)
     opts = opts or {}
+    local settings = normalizeSettings(opts.settings)
     local t = {
         id = nextId, seats = {}, match = nil,
         startClock = START_DELAY, ranked = opts.ranked or false,
         finished = false,
+        settings   = settings,
+        bestOf     = settings.bestOf,
+        setsNeeded = math.floor(settings.bestOf / 2) + 1,  -- 1→1, 3→2, 5→3
+        setsWon    = { [1] = 0, [2] = 0 },
+        setsPlayed = 0,
     }
     nextId = nextId + 1
     for seat = 1, 4 do
@@ -109,7 +126,7 @@ function TableManager.createTable(players, opts)
             pcall(function() s.peer:send(deps.encode("match_found", {
                 seat = seat, team = teamOf(seat),
                 my_trophies = s.trophies, ranked = t.ranked,
-                players = list,
+                players = list, settings = t.settings,
             })) end)
         end
     end
@@ -118,10 +135,38 @@ function TableManager.createTable(players, opts)
 end
 
 function TableManager._start(t)
-    t.match = MusEngine.newMatch({}, os.time() * 131 + t.id)
+    t.setsPlayed = t.setsPlayed + 1
+    t.match = MusEngine.newMatch(
+        { reyes8 = t.settings.reyes8, targetPiedras = 40 },
+        os.time() * 131 + t.id * 977 + t.setsPlayed)
     local events = MusEngine.startHand(t.match)
     dispatch(t, events)
     afterEngineStep(t)
+end
+
+-- A single 40-piedra set has been won. Update the series tally; either finish
+-- the whole game (best-of decided) or queue the next set.
+function TableManager._finishSet(t)
+    local setWinner = t.match.winner
+    t.setsWon[setWinner] = t.setsWon[setWinner] + 1
+    local seriesOver = t.setsWon[setWinner] >= t.setsNeeded
+
+    broadcast(t, "set_result", {
+        set_winner  = setWinner,
+        sets_won    = { t.setsWon[1], t.setsWon[2] },
+        sets_needed = t.setsNeeded,
+        best_of     = t.bestOf,
+        series_over = seriesOver,
+    })
+    deps.pushLog("Table " .. t.id .. " set " .. t.setsPlayed .. " → team " ..
+                 tostring(setWinner) .. " (" .. t.setsWon[1] .. "-" .. t.setsWon[2] .. ")")
+
+    if seriesOver then
+        TableManager._finishGame(t)
+    else
+        -- Show the set-result banner, then start the next set.
+        t.nextSetClock = NEXT_SET_DELAY
+    end
 end
 
 function TableManager._finishGame(t)
@@ -145,7 +190,7 @@ function TableManager._finishGame(t)
                     gold = gold, gems = gems, xp = xp.xp, level = xp.level })
                 if s.peer and s.connected then
                     pcall(function() s.peer:send(deps.encode("currency_update", {
-                        gold = gold, gems = gems, xp = xp.xp, level = xp.level, unlocks = xp.unlocks })) end)
+                        gold = gold, gems = gems, xp = xp.xp, level = xp.level })) end)
                 end
             end
         end
@@ -190,6 +235,7 @@ function TableManager.handleEmote(ck, msgData)
     if not ref then return end
     local t = tables[ref.tableId]
     if not t then return end
+    if not (t.settings and t.settings.emotes) then return end   -- emotes disabled for this table
     broadcast(t, "emote", { seat = ref.seat, emote = tostring(msgData.emote or "") }, ref.seat)
 end
 
@@ -246,6 +292,8 @@ function TableManager.tryReattach(playerId, peer, ck)
     sendTo(t, ref.seat, "state_snapshot", {
         players = roster(t), seat = ref.seat, team = teamOf(ref.seat),
         ranked = t.ranked, view = snapshot,
+        settings = t.settings, best_of = t.bestOf, sets_needed = t.setsNeeded,
+        sets_won = { t.setsWon[1], t.setsWon[2] },
     })
     deps.pushLog("Table " .. t.id .. ": seat " .. ref.seat .. " reconnected")
     return true
@@ -271,6 +319,12 @@ function TableManager.update(dt)
         elseif t.finished then
             t.cleanupClock = (t.cleanupClock or CLEANUP_DELAY) - dt
             if t.cleanupClock <= 0 then destroyTable(t) end
+        elseif t.nextSetClock then
+            t.nextSetClock = t.nextSetClock - dt
+            if t.nextSetClock <= 0 then
+                t.nextSetClock = nil
+                TableManager._start(t)   -- fresh 40-piedra set (new engine match)
+            end
         elseif t.nextHandClock then
             t.nextHandClock = t.nextHandClock - dt
             if t.nextHandClock <= 0 then

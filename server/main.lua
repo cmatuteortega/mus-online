@@ -87,6 +87,20 @@ local function encode(eventName, data)
     return "["..val(eventName)..","..val(data).."]"
 end
 
+-- Never trust client-sent rule settings: clamp to the known values and default
+-- to the base queue (4 kings, no emotes, best of 3).
+local function sanitizeSettings(s)
+    s = s or {}
+    local bestOf = tonumber(s.bestOf)
+    if bestOf ~= 1 and bestOf ~= 3 and bestOf ~= 5 then bestOf = 3 end
+    return { reyes8 = s.reyes8 == true, emotes = s.emotes == true, bestOf = bestOf }
+end
+
+-- Canonical key so only players who chose identical rules are matched together.
+local function settingsKey(s)
+    return string.format("%s|%s|%d", tostring(s.reyes8), tostring(s.emotes), s.bestOf)
+end
+
 -- Matchmaking: allowed trophy range grows the longer a player waits.
 local function allowedRange(player)
     local waitTime = love.timer.getTime() - player.queue_time
@@ -94,12 +108,14 @@ local function allowedRange(player)
 end
 
 -- Find 4 mutually-compatible players (anchor = longest waiting first).
+-- Compatibility = identical rule settings AND within the anchor's trophy range.
 local function findGroup()
     for i, anchor in ipairs(queue) do
         local range = allowedRange(anchor)
         local group = { i }
         for j, other in ipairs(queue) do
-            if j ~= i and math.abs(anchor.trophies - other.trophies) <= range then
+            if j ~= i and other.settingsKey == anchor.settingsKey
+               and math.abs(anchor.trophies - other.trophies) <= range then
                 group[#group + 1] = j
                 if #group == 4 then return group end
             end
@@ -127,11 +143,14 @@ local function processMatchmaking()
         if not group then return end
         table.sort(group, function(a, b) return a > b end)   -- remove high→low
         local entries = {}
+        local groupSettings = nil
         for _, idx in ipairs(group) do
-            entries[#entries + 1] = toSeatEntry(table.remove(queue, idx))
+            local q = table.remove(queue, idx)
+            groupSettings = groupSettings or q.settings   -- all share the same key
+            entries[#entries + 1] = toSeatEntry(q)
         end
         local seated = seatPlayers(entries)
-        TableManager.createTable(seated, { ranked = true })
+        TableManager.createTable(seated, { ranked = true, settings = groupSettings })
         pushLog("Match: " .. seated[1].username .. "+" .. seated[3].username ..
                 " vs " .. seated[2].username .. "+" .. seated[4].username)
     end
@@ -369,16 +388,20 @@ local function handleMessage(peer, eventName, msgData)
             end
         end
 
+        local settings = sanitizeSettings(msgData.settings)
         table.insert(queue, {
-            peer       = peer,
-            player_id  = player.id,
-            username   = player.username,
-            trophies   = player.trophies,
-            queue_time = love.timer.getTime()
+            peer        = peer,
+            player_id   = player.id,
+            username    = player.username,
+            trophies    = player.trophies,
+            queue_time  = love.timer.getTime(),
+            settings    = settings,
+            settingsKey = settingsKey(settings),
         })
 
         peer:send(encode("queue_joined", {}))
-        pushLog("Queue join: " .. player.username .. " (" .. player.trophies .. " trophies)")
+        pushLog("Queue join: " .. player.username .. " (" .. player.trophies ..
+                " trophies, rules " .. settingsKey(settings) .. ")")
 
     elseif eventName == "queue_leave" then
         for i, entry in ipairs(queue) do
@@ -425,7 +448,8 @@ local function handleMessage(peer, eventName, msgData)
             return
         end
         table.insert(room.players, { peer = peer, player_id = player.id,
-                                     username = player.username, trophies = player.trophies })
+                                     username = player.username, trophies = player.trophies,
+                                     settings = sanitizeSettings(msgData.settings) })
         pushLog("Private queue: " .. player.username .. " on key=" .. key .. " (" .. #room.players .. "/4)")
 
         -- Everyone in the room sees the lobby fill up.
@@ -438,12 +462,13 @@ local function handleMessage(peer, eventName, msgData)
 
         if #room.players == 4 then
             privateQueue[key] = nil
+            local hostSettings = room.players[1] and room.players[1].settings
             local entries = {}
             for _, p in ipairs(room.players) do
                 entries[#entries + 1] = { peer = p.peer, connKey = connKey(p.peer), player_id = p.player_id,
                                           username = p.username, trophies = p.trophies, isBot = false }
             end
-            TableManager.createTable(entries, { ranked = false })
+            TableManager.createTable(entries, { ranked = false, settings = hostSettings })
             pushLog("Private table started (key=" .. key .. ")")
         end
 
@@ -454,6 +479,7 @@ local function handleMessage(peer, eventName, msgData)
         for key, room in pairs(privateQueue) do
             if room.players[1] and room.players[1].player_id == session.player_id then
                 privateQueue[key] = nil
+                local hostSettings = room.players[1].settings
                 local entries = {}
                 for _, p in ipairs(room.players) do
                     entries[#entries + 1] = { peer = p.peer, connKey = connKey(p.peer), player_id = p.player_id,
@@ -462,7 +488,7 @@ local function handleMessage(peer, eventName, msgData)
                 for i = #entries + 1, 4 do
                     entries[i] = { username = Bot.pickName(i), trophies = 0, isBot = true }
                 end
-                TableManager.createTable(entries, { ranked = false })
+                TableManager.createTable(entries, { ranked = false, settings = hostSettings })
                 pushLog("Private table started with bots (key=" .. key .. ")")
                 return
             end

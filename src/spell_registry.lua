@@ -8,6 +8,6 @@ SpellRegistry.descriptions = {}
 
 function SpellRegistry.isSpell() return false end
 function SpellRegistry.getAllSpellTypes() return {} end
-function SpellRegistry.loadSprites() end
+function SpellRegistry.loadSprites() return {} end
 
 return SpellRegistry

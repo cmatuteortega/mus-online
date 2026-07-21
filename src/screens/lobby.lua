@@ -1,13 +1,18 @@
 -- Mus Online – Matchmaking Lobby Screen
 -- Auto-joins queue, waits for match, then launches GameScreen.
 
-local Screen      = require('lib.screen')
-local Constants   = require('src.constants')
-local DeckManager = require('src.deck_manager')
-local UnitRegistry = require('src.unit_registry')
-local PaletteShader = require('src.palette_shader')
+local Screen       = require('lib.screen')
+local Constants    = require('src.constants')
+local GameSettings = require('src.game_settings')
+local Locale       = require('src.locale')
 
 local LobbyScreen = {}
+
+-- Scrolling ticker text: one word repeated so two copies tile seamlessly.
+local function tickerString(matched)
+    local word = matched and Locale.t("lobby.matchfound_word") or Locale.t("lobby.matchmaking_word")
+    return string.rep(word .. "  -  ", 4)
+end
 
 function LobbyScreen.new()
     local self = Screen.new()
@@ -33,7 +38,7 @@ function LobbyScreen.new()
         self.client = client  -- Authenticated socket from login/menu
         self.roomKey = roomKey or nil  -- nil = public queue, string = private match key
         self.status = "queueing"  -- queueing | matched | error
-        self.statusMsg = "Finding match..."
+        self.statusMsg = Locale.t("lobby.finding")
         self.queueStartTime = love.timer.getTime()
         self.mySeat = nil
         self.myTeam = nil
@@ -50,49 +55,21 @@ function LobbyScreen.new()
 
         -- Random waiting sentence (picked once at init)
         local sentences = {
-            "Finding a worthy opponent...",
-            "Waiting for the ideal match...",
-            "Looking for a duel...",
-            "Sharpening swords before the battle...",
-            "Scouts are searching the realm...",
-            "Summoning a rival commander...",
-            "The arena awaits a challenger...",
-            "Seeking someone brave enough to face you...",
+            Locale.t("lobby.wait1"), Locale.t("lobby.wait2"), Locale.t("lobby.wait3"),
+            Locale.t("lobby.wait4"), Locale.t("lobby.wait5"), Locale.t("lobby.wait6"),
+            Locale.t("lobby.wait7"), Locale.t("lobby.wait8"),
         }
         self.waitingSentence = sentences[math.random(#sentences)]
 
-        -- Background sprite
-        self.bgSprite  = love.graphics.newImage('src/assets/background_menu.png')
-        self.bgOffsetY = -49  -- tweak to shift background up (negative) or down (positive)
-
         -- Match delay timer
         self.matchTimer = nil
-
-        -- Deck preview (mirrors menu play-panel)
-        self.unitOrder          = UnitRegistry.getAllUnitTypes()
-        table.sort(self.unitOrder)
-        self.sprites            = {}
-        self.spriteTrimBottoms  = {}
-        self.dirSprites         = {}
-        self.idleAnim           = {}
-        self.attackAnim         = {}
-        self.previewLayout      = {}
-        for _, utype in ipairs(self.unitOrder) do
-            local loaded = UnitRegistry.loadDirectionalSprites(utype)
-            self.sprites[utype]           = loaded.front
-            self.spriteTrimBottoms[utype] = loaded.frontTrimBottom
-            self.dirSprites[utype]        = loaded
-            self.idleAnim[utype]          = { frameIndex = 1, timer = 0 }
-            self.attackAnim[utype]        = { active = false, progress = 0, duration = 0.45 }
-        end
-        self:buildPreviewLayout()
 
         -- Cancel button spring physics
         self._cancelSpring = { scale = 1.0, vel = 0.0, pressed = false }
 
         -- Ticker stripe
         self._tickerOffset = 0
-        self._tickerMsg    = "matchmaking  -  matchmaking  -  matchmaking  -  matchmaking  -  "
+        self._tickerMsg    = tickerString(false)
         self._tickerMsgPx  = 0  -- computed lazily once font is available
 
         -- Register network callbacks
@@ -108,118 +85,16 @@ function LobbyScreen.new()
         end
     end
 
-    function self:buildPreviewLayout()
-        self.previewLayout = {}
-        local deck = DeckManager.getActiveDeck()
-        if not deck then return end
-
-        -- Collect unit types with at least 1 card, in stable sorted order
-        local units = {}
-        for utype, count in pairs(deck.counts) do
-            if count > 0 then table.insert(units, utype) end
-        end
-        table.sort(units)
-        if #units == 0 then return end
-
-        local occupied = {}
-        local placed   = 0
-        local function occupy(r, c)
-            placed = placed + 1
-            occupied[r * 10 + c] = true
-            table.insert(self.previewLayout, { unitType = units[placed], col = c, row = r })
-        end
-
-        -- Phase 1: V formation — tip at front-center, arms extending back-outward
-        --   Row 4 (front): col 3  — tip
-        --   Row 3:         col 2, col 4
-        --   Row 2:         col 1, col 5
-        --   Row 1 (back):  col 1, col 5
-        local vPos = {
-            {4,3}, {3,2},{3,4}, {2,1},{2,5}, {1,1},{1,5},
-        }
-        for _, p in ipairs(vPos) do
-            if placed >= #units then break end
-            occupy(p[1], p[2])
-        end
-
-        -- Phase 2: spaced positions — no occupied cardinal neighbour (1-cell gap)
-        if placed < #units then
-            local function cardinalHit(r, c)
-                return occupied[(r-1)*10+c] or occupied[(r+1)*10+c]
-                    or occupied[r*10+(c-1)] or occupied[r*10+(c+1)]
-            end
-            for r = 1, 4 do
-                for c = 1, 5 do
-                    if placed >= #units then break end
-                    if not occupied[r*10+c] and not cardinalHit(r, c) then
-                        occupy(r, c)
-                    end
-                end
-            end
-        end
-
-        -- Phase 3: no more spaced room — fill remaining cells randomly
-        if placed < #units then
-            local rem = {}
-            for r = 1, 4 do
-                for c = 1, 5 do
-                    if not occupied[r*10+c] then table.insert(rem, {r,c}) end
-                end
-            end
-            for i = #rem, 2, -1 do
-                local j = math.random(i)
-                rem[i], rem[j] = rem[j], rem[i]
-            end
-            for _, p in ipairs(rem) do
-                if placed >= #units then break end
-                occupy(p[1], p[2])
-            end
-        end
-    end
-
-    function self:getPreviewFrame(utype)
-        local d = self.dirSprites[utype]
-        if d and d.hasDirectionalSprites then
-            local atk = self.attackAnim[utype]
-            if atk.active and d.directional.hit and d.directional.hit[0] then
-                local dirData = d.directional.hit[0]
-                local count   = #dirData.frames
-                local p       = atk.progress
-                local idx
-                if count >= 3 then
-                    if     p < 1/3 then idx = 1
-                    elseif p < 2/3 then idx = 2
-                    else                idx = 3 end
-                else
-                    idx = math.min(count, math.floor(p * count) + 1)
-                end
-                return dirData.frames[idx], dirData.trimBottom[idx]
-            end
-            local aio = d.directional.actionIdleOverride
-            if aio and (aio[0] or aio[180]) then
-                local ad  = aio[0] or aio[180]
-                local idx = math.min(self.idleAnim[utype].frameIndex, #ad.frames)
-                return ad.frames[idx], ad.trimBottom[idx] or 0
-            end
-            if d.directional.idle and d.directional.idle[0] then
-                local dirData = d.directional.idle[0]
-                local idx     = self.idleAnim[utype].frameIndex
-                return dirData.frames[idx], dirData.trimBottom[idx]
-            end
-        end
-        return self.sprites[utype], self.spriteTrimBottoms[utype] or 0
-    end
-
     function self:registerNetworkCallbacks()
         self._cb_queueJoined = self.client:on("queue_joined", function()
             self.status = "queueing"
-            self.statusMsg = "Finding match..."
+            self.statusMsg = Locale.t("lobby.finding")
             print("Queue joined")
         end)
 
         self._cb_privateQueueJoined = self.client:on("private_queue_joined", function()
             self.status = "queueing"
-            self.statusMsg = "Waiting for friend..."
+            self.statusMsg = Locale.t("lobby.waiting_friend")
             print("Private queue joined")
         end)
 
@@ -233,9 +108,10 @@ function LobbyScreen.new()
             self.myTeam      = data.team
             self.tablePlayers = data.players or {}
             self.tableRanked  = data.ranked or false
+            self.tableSettings = data.settings or nil
             self.myTrophies  = data.my_trophies or self.myTrophies
             self.status = "matched"
-            self.statusMsg = "Match found!"
+            self.statusMsg = Locale.t("lobby.match_found")
             print("Match found: seat " .. tostring(data.seat) .. " of 4")
 
             -- Show match info briefly before launching
@@ -251,18 +127,18 @@ function LobbyScreen.new()
 
         self._cb_oppDisconn = self.client:on("opponent_disconnected", function()
             self.status = "error"
-            self.statusMsg = "Opponent disconnected"
+            self.statusMsg = Locale.t("lobby.opp_disconnected")
         end)
 
         self._cb_error = self.client:on("error", function(data)
             if data.reason == "Not authenticated" and _G.PlayerData and _G.PlayerData.token then
                 -- Session dropped — silently reconnect using stored token
                 self.status = "reconnecting"
-                self.statusMsg = "Reconnecting..."
+                self.statusMsg = Locale.t("lobby.reconnecting")
                 self.client:send("reconnect_with_token", {token = _G.PlayerData.token, device_id = _G.DeviceId or ""})
             else
                 self.status = "error"
-                self.statusMsg = data.reason or "Error occurred"
+                self.statusMsg = data.reason or Locale.t("lobby.error")
             end
         end)
 
@@ -280,19 +156,21 @@ function LobbyScreen.new()
     function self:joinQueue()
         if not self.client then
             self.status = "error"
-            self.statusMsg = "No connection"
+            self.statusMsg = Locale.t("lobby.no_connection")
             return
         end
 
         if self.roomKey then
             self.client:send("private_queue_join", {
                 player_id = _G.PlayerData.id,
-                room_key  = self.roomKey
+                room_key  = self.roomKey,
+                settings  = GameSettings.payload(),
             })
         else
             self.client:send("queue_join", {
                 player_id = _G.PlayerData.id,
-                trophies  = _G.PlayerData.trophies
+                trophies  = _G.PlayerData.trophies,
+                settings  = GameSettings.payload(),
             })
         end
     end
@@ -316,7 +194,7 @@ function LobbyScreen.new()
                 self.client = nil
                 _G.GameSocket = nil
                 self.status    = "error"
-                self.statusMsg = "Sin conexión a internet"
+                self.statusMsg = Locale.t("common.no_internet")
             end
         end
 
@@ -331,10 +209,11 @@ function LobbyScreen.new()
 
                 -- Store table info globally for the game screen
                 _G.TableInfo = {
-                    seat    = self.mySeat,
-                    team    = self.myTeam,
-                    players = self.tablePlayers,
-                    ranked  = self.tableRanked,
+                    seat     = self.mySeat,
+                    team     = self.myTeam,
+                    players  = self.tablePlayers,
+                    ranked   = self.tableRanked,
+                    settings = self.tableSettings,
                 }
 
                 local seat   = self.mySeat
@@ -343,28 +222,6 @@ function LobbyScreen.new()
                     local ScreenManager = require('lib.screen_manager')
                     ScreenManager.switch('game', true, seat, client)
                 end)
-            end
-        end
-
-        -- Advance idle and attack animations for deck preview
-        local DEFAULT_IDLE_FRAME_DUR = 0.12 * 2
-        local IDLE_FRAME_DUR_OVERRIDE = { marrow = 0.18 }
-        for _, utype in ipairs(self.unitOrder) do
-            local d = self.dirSprites[utype]
-            if d and d.hasDirectionalSprites and d.directional.idle and d.directional.idle[0] then
-                local frames   = d.directional.idle[0].frames
-                local anim     = self.idleAnim[utype]
-                local frameDur = IDLE_FRAME_DUR_OVERRIDE[utype] or DEFAULT_IDLE_FRAME_DUR
-                anim.timer = anim.timer + dt
-                if anim.timer >= frameDur then
-                    anim.timer      = anim.timer - frameDur
-                    anim.frameIndex = (anim.frameIndex % #frames) + 1
-                end
-            end
-            local atk = self.attackAnim[utype]
-            if atk.active then
-                atk.progress = atk.progress + dt / atk.duration
-                if atk.progress >= 1 then atk.active = false; atk.progress = 0 end
             end
         end
 
@@ -379,9 +236,7 @@ function LobbyScreen.new()
         updateSpring(self._cancelSpring, dt)
 
         -- Ticker stripe: swap message on status change, scroll continuously
-        local tickerMsg = (self.status == "matched")
-            and "match found!  -  match found!  -  match found!  -  match found!  -  "
-            or  "matchmaking  -  matchmaking  -  matchmaking  -  matchmaking  -  "
+        local tickerMsg = tickerString(self.status == "matched")
         if tickerMsg ~= self._tickerMsg then
             self._tickerMsg    = tickerMsg
             self._tickerMsgPx  = 0
@@ -403,10 +258,10 @@ function LobbyScreen.new()
         local stripeY = math.floor(75 * sc + Constants.MENU_CONTENT_PUSH)
         local stripeH = math.floor(36 * sc)
 
-        lg.setColor(0.031, 0.078, 0.118, 1)
+        lg.setColor(0.133, 0.133, 0.157, 1)
         lg.rectangle('fill', 0, stripeY, W, stripeH)
 
-        lg.setColor(0.125, 0.224, 0.310, 1)
+        lg.setColor(0.463, 0.529, 0.671, 1)
         lg.setLineWidth(math.max(1, math.floor(sc)))
         lg.line(0, stripeY, W, stripeY)
         lg.line(0, stripeY + stripeH, W, stripeY + stripeH)
@@ -415,9 +270,9 @@ function LobbyScreen.new()
             lg.setScissor(0, stripeY, W, stripeH)
             lg.setFont(Fonts.small)
             if self.status == "matched" then
-                lg.setColor(0.9, 0.85, 0.3, 1)
+                lg.setColor(0.851, 0.761, 0.467, 1)
             else
-                lg.setColor(0.965, 0.839, 0.741, 1)
+                lg.setColor(0.875, 0.902, 0.878, 1)
             end
             local textY = math.floor(stripeY + (stripeH - (Fonts.small:getAscent() - Fonts.small:getDescent())) / 2)
             local x0 = math.floor(-self._tickerOffset)
@@ -439,23 +294,6 @@ function LobbyScreen.new()
 
         lg.clear(Constants.COLORS.BACKGROUND)
 
-        -- Background sprite (same pixel scale as deck preview unit sprites: 1px = CELL_SIZE/16)
-        -- Compute gridY identically to the deck preview so the background aligns with it
-        local bgBarH       = 90 * sc
-        local bgBtnY       = (H - bgBarH) * 0.62
-        local bgContentTop = 100 * sc + Constants.MENU_CONTENT_PUSH
-        local bgGridH      = 4 * Constants.CELL_SIZE
-        local bgGridY      = math.floor(bgContentTop + (bgBtnY - bgContentTop - bgGridH) / 2)
-        if self.bgSprite then
-            local imgW      = self.bgSprite:getWidth()
-            local drawScale = Constants.CELL_SIZE / 16
-            local drawW     = imgW * drawScale
-            lg.setColor(1, 1, 1, 1)
-            lg.setShader(PaletteShader.get())
-            lg.draw(self.bgSprite, math.floor((W - drawW) / 2), math.floor(bgGridY + self.bgOffsetY), 0, drawScale, drawScale)
-            lg.setShader()
-        end
-
         -- Queue timer
         if self.status == "queueing" then
             local elapsed = love.timer.getTime() - self.queueStartTime
@@ -467,89 +305,29 @@ function LobbyScreen.new()
         -- Ticker stripe (scrolling status text)
         self:drawTickerStripe(W, sc)
 
-        -- ── Deck preview grid ────────────────────────────────────────────────
+        -- ── Layout anchors (battle preview grid + background removed —
+        --    placeholder region kept so status text and buttons stay positioned) ──
         local cellSize   = Constants.CELL_SIZE
-        local gridW      = 5 * cellSize
         local gridH      = 4 * cellSize
-        local gridX      = math.floor((W - gridW) / 2)
         local barH       = 90 * sc
         local btnY       = (H - barH) * 0.62
         local contentTop = 100 * sc + Constants.MENU_CONTENT_PUSH
         local gridY      = math.floor(contentTop + (btnY - contentTop - gridH) / 2)
 
-        local CDARK  = Constants.COLORS.CHESS_DARK
-        local CLIGHT = Constants.COLORS.CHESS_LIGHT
-        for row = 1, 4 do
-            for col = 1, 5 do
-                local cx2 = gridX + (col - 1) * cellSize
-                local cy2 = gridY + (row - 1) * cellSize
-                lg.setColor((row + col) % 2 == 0 and CDARK or CLIGHT)
-                lg.rectangle('fill', cx2, cy2, cellSize, cellSize)
-            end
-        end
-
-        -- Grid border
-        lg.setColor(0.125, 0.224, 0.310, 1)
-        lg.setLineWidth(math.max(1, math.floor(sc)))
-        lg.rectangle('line', gridX, gridY, gridW, gridH)
-
-        -- Animated unit sprites (draw back rows first so front rows overlap)
-        local sprSc = cellSize / 16
-        local sortedLayout = {}
-        for i, e in ipairs(self.previewLayout) do sortedLayout[i] = e end
-        table.sort(sortedLayout, function(a, b) return a.row < b.row end)
-        for _, entry in ipairs(sortedLayout) do
-            local img, trimBottom = self:getPreviewFrame(entry.unitType)
-            if img then
-                local iw, ih = img:getDimensions()
-                local cx2 = gridX + (entry.col - 1) * cellSize
-                local cy2 = gridY + (entry.row - 1) * cellSize
-                -- Background animation (e.g. fire effects)
-                local bgFrames = self.dirSprites[entry.unitType] and self.dirSprites[entry.unitType].bgAnimFrames
-                if bgFrames then
-                    local fps      = 8
-                    local frameIdx = math.floor(love.timer.getTime() * fps) % #bgFrames + 1
-                    local bgImg    = bgFrames[frameIdx]
-                    local bw, bh   = bgImg:getDimensions()
-                    local BOTTOM_MARGIN = 3
-                    local bgOffX = math.floor(cx2 + (cellSize - bw * sprSc) / 2)
-                    local bgOffY = math.floor(cy2 + cellSize - (bh - trimBottom + BOTTOM_MARGIN) * sprSc)
-                    lg.setColor(1, 1, 1, 1)
-                    lg.setShader(PaletteShader.get())
-                    lg.draw(bgImg, bgOffX, bgOffY, 0, sprSc, sprSc)
-                    lg.setShader()
-                end
-                local BOTTOM_MARGIN = 3
-                local sx = math.floor(cx2 + (cellSize - iw * sprSc) / 2)
-                local sy = math.floor(cy2 + cellSize - (ih - trimBottom + BOTTOM_MARGIN) * sprSc)
-                lg.setColor(1, 1, 1, 1)
-                lg.setShader(PaletteShader.get())
-                lg.draw(img, sx, sy, 0, sprSc, sprSc)
-                lg.setShader()
-            end
-        end
-
-        if #self.previewLayout == 0 then
-            lg.setFont(Fonts.small)
-            lg.setColor(0.306, 0.286, 0.373, 1)
-            lg.printf("Equip a deck to preview", gridX,
-                gridY + gridH / 2 - Fonts.small:getHeight() / 2, gridW, 'center')
-        end
-
-        -- ── Status area (below grid) ─────────────────────────────────────────
+        -- ── Status area (below placeholder region) ───────────────────────────
         local infoY = gridY + gridH + 28 * sc
 
         if self.status == "queueing" then
             lg.setFont(Fonts.small)
-            lg.setColor(0.6, 0.6, 0.7, 1)
+            lg.setColor(0.663, 0.733, 0.800, 1)
             lg.printf(self.waitingSentence, 0, infoY, W, 'center')
 
             if self.roomKey then
                 lg.setFont(Fonts.tiny)
                 lg.setColor(0.4, 0.4, 0.4, 0.5)
-                local roomLine = "Room: " .. self.roomKey
+                local roomLine = Locale.t("lobby.room", self.roomKey)
                 if self.privateCount then
-                    roomLine = roomLine .. "   ·   " .. self.privateCount .. "/4 players"
+                    roomLine = roomLine .. "   ·   " .. Locale.t("lobby.players_count", self.privateCount)
                 end
                 lg.printf(roomLine, 0, infoY + Fonts.small:getHeight() + 8 * sc, W, 'center')
                 if self.privatePlayers and #self.privatePlayers > 0 then
@@ -562,13 +340,13 @@ function LobbyScreen.new()
 
         elseif self.status == "matched" then
             lg.setFont(Fonts.small)
-            lg.setColor(0.6, 0.6, 0.7, 1)
-            lg.printf("Match Found!", 0, infoY, W, 'center')
+            lg.setColor(0.663, 0.733, 0.800, 1)
+            lg.printf(Locale.t("lobby.match_found"), 0, infoY, W, 'center')
 
             -- Show the two teams: you+partner vs the other pair.
             local mates, rivals = {}, {}
             for _, p in ipairs(self.tablePlayers or {}) do
-                local label = p.username .. (p.seat == self.mySeat and " (you)" or "")
+                local label = p.username .. (p.seat == self.mySeat and (" (" .. Locale.t("common.you") .. ")") or "")
                 if p.team == self.myTeam then mates[#mates + 1] = label
                 else rivals[#rivals + 1] = label end
             end
@@ -577,8 +355,8 @@ function LobbyScreen.new()
             local y1 = infoY + Fonts.small:getHeight() + 10 * sc
             lg.printf(table.concat(mates, " + "), 0, y1, W, 'center')
             lg.setFont(Fonts.small)
-            lg.setColor(0.9, 0.85, 0.3, 1)
-            lg.printf("vs", 0, y1 + Fonts.medium:getHeight() + 6 * sc, W, 'center')
+            lg.setColor(0.851, 0.761, 0.467, 1)
+            lg.printf(Locale.t("common.vs"), 0, y1 + Fonts.medium:getHeight() + 6 * sc, W, 'center')
             lg.setFont(Fonts.medium)
             lg.setColor(1, 1, 1, 1)
             lg.printf(table.concat(rivals, " + "), 0,
@@ -586,7 +364,7 @@ function LobbyScreen.new()
 
         elseif self.status == "error" then
             lg.setFont(Fonts.medium)
-            lg.setColor(1, 0.4, 0.4, 1)
+            lg.setColor(0.757, 0.482, 0.361, 1)
             lg.printf(self.statusMsg, 0, infoY, W, 'center')
         end
 
@@ -609,7 +387,7 @@ function LobbyScreen.new()
             local sdrawY   = sbtnY - sfloat + math.floor(idleBob)
 
             -- Shadow
-            lg.setColor(0.031, 0.078, 0.118, 1)
+            lg.setColor(0.133, 0.133, 0.157, 1)
             roundedRect(btnX + math.floor(2 * sc), sbtnY + shadowH, btnW, sbtnH, 8, sc)
 
             -- Face: pivot at center, rotate then scale (matches JOIN exactly)
@@ -621,13 +399,13 @@ function LobbyScreen.new()
             lg.translate(pivX, pivY)
             lg.rotate(idleRot)
             lg.scale(ss, ss)
-            lg.setColor(0.600, 0.459, 0.467, 1)
+            lg.setColor(0.522, 0.267, 0.290, 1)
             roundedRect(bx, by, btnW, sbtnH, 8, sc)
-            lg.setColor(0.700, 0.559, 0.567, 1)
+            lg.setColor(0.757, 0.482, 0.361, 1)
             roundedRectLine(bx, by, btnW, sbtnH, 8, sc, 2 * sc)
             lg.setFont(Fonts.large)
             lg.setColor(1, 1, 1, 1)
-            lg.printf("Cancel", bx, textCY(Fonts.large, by, sbtnH), btnW, 'center')
+            lg.printf(Locale.t("common.cancel"), bx, textCY(Fonts.large, by, sbtnH), btnW, 'center')
             lg.pop()
 
             self._cancelBtnRect = { x = btnX, y = sbtnY - maxFloat, w = btnW, h = sbtnH + maxFloat }
@@ -638,15 +416,15 @@ function LobbyScreen.new()
                 local bbH = math.floor(52 * sc)
                 local bbX = math.floor(cx - bbW / 2)
                 local bbY = sbtnY - bbH - math.floor(16 * sc)
-                lg.setColor(0.031, 0.078, 0.118, 1)
+                lg.setColor(0.133, 0.133, 0.157, 1)
                 roundedRect(bbX + math.floor(2 * sc), bbY + math.floor(4 * sc), bbW, bbH, 8, sc)
-                lg.setColor(0.125, 0.324, 0.310, 1)
+                lg.setColor(0.608, 0.631, 0.373, 1)
                 roundedRect(bbX, bbY, bbW, bbH, 8, sc)
-                lg.setColor(0.225, 0.424, 0.410, 1)
+                lg.setColor(0.851, 0.761, 0.467, 1)
                 roundedRectLine(bbX, bbY, bbW, bbH, 8, sc, 2 * sc)
                 lg.setFont(Fonts.small)
                 lg.setColor(1, 1, 1, 1)
-                lg.printf("Start with bots", bbX, textCY(Fonts.small, bbY, bbH), bbW, 'center')
+                lg.printf(Locale.t("lobby.start_bots"), bbX, textCY(Fonts.small, bbY, bbH), bbW, 'center')
                 self._botsBtnRect = { x = bbX, y = bbY, w = bbW, h = bbH }
             else
                 self._botsBtnRect = nil
@@ -669,13 +447,13 @@ function LobbyScreen.new()
             local range      = baseRange + expand
             local lo         = math.max(0, self.myTrophies - range)
             local hi         = self.myTrophies + range
-            lg.printf(string.format("%d trophies  ·  searching %d – %d", self.myTrophies, lo, hi),
+            lg.printf(Locale.t("lobby.search_range", self.myTrophies, lo, hi),
                 0, H - math.max(50 * sc, Constants.SAFE_INSET_BOTTOM + 24 * sc), W, 'center')
         elseif self.status == "matched" then
-            lg.printf("Starting game...", 0, H - math.max(50 * sc, Constants.SAFE_INSET_BOTTOM + 24 * sc), W, 'center')
+            lg.printf(Locale.t("lobby.starting"), 0, H - math.max(50 * sc, Constants.SAFE_INSET_BOTTOM + 24 * sc), W, 'center')
         end
         if _G.PlayerData then
-            lg.printf("ID: " .. _G.PlayerData.id, 0, H - math.max(30 * sc, Constants.SAFE_INSET_BOTTOM + 4 * sc), W, 'center')
+            lg.printf(Locale.t("lobby.id", tostring(_G.PlayerData.id)), 0, H - math.max(30 * sc, Constants.SAFE_INSET_BOTTOM + 4 * sc), W, 'center')
         end
     end
 

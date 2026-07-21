@@ -10,6 +10,7 @@ local Constants = require('src.constants')
 local config    = require('src.config')
 local sock      = require('lib.sock')
 local json      = require('lib.json')
+local Locale    = require('src.locale')
 
 local LoadingScreen = {}
 
@@ -18,7 +19,7 @@ function LoadingScreen.new()
 
     function self:init()
         self.status    = "connecting"
-        self.statusMsg = "Connecting..."
+        self.statusMsg = Locale.t("common.connecting")
         self.client    = nil
         self.elapsed   = 0
         self.TIMEOUT   = 5
@@ -57,7 +58,7 @@ function LoadingScreen.new()
 
         self.client:on("connect", function()
             self.status    = "authing"
-            self.statusMsg = "Authenticating..."
+            self.statusMsg = Locale.t("common.authenticating")
             if self.authMode == "token" then
                 self.client:send("reconnect_with_token", {
                     token     = self.token,
@@ -72,7 +73,7 @@ function LoadingScreen.new()
 
         self.client:on("disconnect", function()
             if self.status ~= "success" then
-                self:fallbackToNameEntry("Disconnected from server")
+                self:fallbackToNameEntry(Locale.t("common.disconnected"))
             end
         end)
 
@@ -122,7 +123,7 @@ function LoadingScreen.new()
                 -- Token was bad; retry with device login before giving up
                 self.authMode = "device"
                 self.status   = "authing"
-                self.statusMsg = "Authenticating..."
+                self.statusMsg = Locale.t("common.authenticating")
                 self.elapsed  = 0
                 self.client:send("login_with_device", {
                     device_id = _G.DeviceId or ""
@@ -154,7 +155,7 @@ function LoadingScreen.new()
 
     function self:enterNoNetwork()
         self.status    = "failed"
-        self.statusMsg = "Sin conexión a internet"
+        self.statusMsg = Locale.t("common.no_internet")
         if self.client then
             pcall(function() self.client:disconnect() end)
             self.client = nil
@@ -164,7 +165,7 @@ function LoadingScreen.new()
     function self:manualRetry()
         if self.status ~= "failed" then return end
         self.status    = "connecting"
-        self.statusMsg = "Connecting..."
+        self.statusMsg = Locale.t("common.connecting")
         self.elapsed   = 0
         self:connectToServer()
     end
@@ -227,7 +228,7 @@ function LoadingScreen.new()
             lg.push()
             lg.translate(cx, cy)
             lg.rotate(angle)
-            lg.setColor(0.5, 0.7, 1, 1)
+            lg.setColor(0.663, 0.733, 0.800, 1)
             lg.setLineWidth(4 * sc)
             lg.arc('line', 'open', 0, 0, spinnerR, 0, math.pi * 1.5)
             lg.pop()
@@ -237,17 +238,17 @@ function LoadingScreen.new()
            and (self.status == "connecting" or self.status == "authing") then
             lg.setFont(Fonts.small)
             lg.setColor(0.7, 0.7, 0.75, 1)
-            lg.printf("Continuing as " .. self.storedUsername, 0, H * 0.34, W, 'center')
+            lg.printf(Locale.t("loading.continuing_as", self.storedUsername), 0, H * 0.34, W, 'center')
         end
 
         local dots = string.rep(".", self.dotCount)
         lg.setFont(Fonts.medium)
         if self.status == "failed" then
-            lg.setColor(1, 0.4, 0.4, 1)
+            lg.setColor(0.757, 0.482, 0.361, 1)
             lg.printf(self.statusMsg, 0, H * 0.56, W, 'center')
             lg.setFont(Fonts.small)
             lg.setColor(0.85, 0.85, 0.9, 1)
-            lg.printf("Toca para reintentar",
+            lg.printf(Locale.t("common.tap_retry"),
                       0, H * 0.56 + Fonts.medium:getHeight() + 6 * sc, W, 'center')
         else
             lg.setColor(0.8, 0.8, 0.85, 1)

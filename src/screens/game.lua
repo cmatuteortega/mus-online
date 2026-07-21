@@ -9,19 +9,32 @@ local Screen        = require('lib.screen')
 local Constants     = require('src.constants')
 local CardRenderer  = require('src.card_renderer')
 local AudioManager  = require('src.audio_manager')
+local Locale        = require('src.locale')
 
 local GameScreen = {}
 
-local STAGE_LABEL = {
-    mus = "MUS", discard = "DESCARTE", grande = "GRANDE", chica = "CHICA",
-    pares = "PARES", juego = "JUEGO", punto = "PUNTO", showdown = "",
+-- Stage / action labels are looked up through Locale so a language switch
+-- takes effect the next time they're drawn. `showdown` has no label.
+local STAGE_KEYS = {
+    mus = "stage.mus", discard = "stage.discard", grande = "stage.grande",
+    chica = "stage.chica", pares = "stage.pares", juego = "stage.juego",
+    punto = "stage.punto",
+}
+local ACTION_KEYS = {
+    mus = "action.mus", no_mus = "action.no_mus", paso = "action.paso",
+    envido = "action.envido", ordago = "action.ordago", quiero = "action.quiero",
+    no_quiero = "action.no_quiero", discard = "action.discard",
 }
 
-local ACTION_LABEL = {
-    mus = "Mus", no_mus = "No hay mus", paso = "Paso", envido = "Envido",
-    ordago = "¡ÓRDAGO!", quiero = "Quiero", no_quiero = "No quiero",
-    discard = "Descartar",
-}
+local function stageLabel(stage)
+    local k = STAGE_KEYS[stage]
+    return k and Locale.t(k) or ""
+end
+
+local function actionLabel(action)
+    local k = ACTION_KEYS[action]
+    return k and Locale.t(k) or action
+end
 
 function GameScreen.new()
     local self = Screen.new()
@@ -48,6 +61,14 @@ function GameScreen.new()
             for _, p in ipairs(_G.TableInfo.players) do self.players[p.seat] = p end
         end
         self.ranked   = (not self.isSandbox) and (_G.TableInfo and _G.TableInfo.ranked) or false
+
+        -- Best-of-N sets (each set is a game to 40 piedras). Sandbox = single set.
+        local settings = (not self.isSandbox) and _G.TableInfo and _G.TableInfo.settings or nil
+        self.bestOf     = (settings and settings.bestOf) or 1
+        self.setsNeeded = math.floor(self.bestOf / 2) + 1
+        self.setsWon    = { 0, 0 }
+        self.setBanner  = nil      -- between-sets interstitial {winner, sets_won, at}
+        self._lastGameEnd = nil    -- keeps ordago/winner from the last set's game_end
 
         self.myCards    = {}
         self.selected   = {}       -- [index] = true, for discards
@@ -88,9 +109,9 @@ function GameScreen.new()
     end
 
     function self:nameOf(seat)
-        if seat == self.mySeat then return "Tú" end
+        if seat == self.mySeat then return Locale.t("game.you") end
         local p = self.players[seat]
-        return p and p.username or ("Seat " .. tostring(seat))
+        return p and p.username or Locale.t("game.seat", seat)
     end
 
     function self:registerCallbacks()
@@ -117,7 +138,8 @@ function GameScreen.new()
         s.revealed = nil
         s.awards = nil
         s.selected = {}
-        s:say("Mano " .. s.handNo .. " — es mano " .. s:nameOf(s.manoSeat))
+        s.setBanner = nil   -- next set's first hand clears the set-result banner
+        s:say(Locale.t("game.hand_start", s.handNo, s:nameOf(s.manoSeat)))
     end
 
     HANDLERS.your_cards = function(s, d)
@@ -153,12 +175,13 @@ function GameScreen.new()
     end
 
     HANDLERS.mus_said = function(s, d)
-        s:say(s:nameOf(d.seat) .. (d.mus and ": mus" or ": ¡no hay mus!"))
+        local name = s:nameOf(d.seat)
+        s:say(d.mus and Locale.t("game.feed_mus", name) or Locale.t("game.feed_no_mus", name))
         if AudioManager.playTap then AudioManager.playTap() end
     end
 
     HANDLERS.discard_chosen = function(s, d)
-        s:say(s:nameOf(d.seat) .. " descarta " .. tostring(d.count))
+        s:say(Locale.t("game.feed_discard", s:nameOf(d.seat), d.count))
     end
 
     HANDLERS.redrew = function(s, d) end
@@ -168,34 +191,35 @@ function GameScreen.new()
         for _, e in ipairs(d.decl or {}) do
             if e.has then yes[#yes + 1] = s:nameOf(e.seat) end
         end
-        local what = d.phase == "pares" and "pares" or "juego"
-        if #yes == 0 then s:say("Nadie tiene " .. what)
-        else s:say(what .. ": " .. table.concat(yes, ", ")) end
+        local what = d.phase == "pares" and Locale.t("game.word_pares") or Locale.t("game.word_juego")
+        if #yes == 0 then s:say(Locale.t("game.nobody_has", what))
+        else s:say(Locale.t("game.declared", what, table.concat(yes, ", "))) end
     end
 
     HANDLERS.bet_action = function(s, d)
         local who = s:nameOf(d.seat)
         if d.action == "envido" then
-            s:say(who .. ": envido " .. tostring(d.amount) .. " (bote " .. tostring(d.proposed) .. ")")
+            s:say(Locale.t("game.feed_envido", who, d.amount or 0, d.proposed or 0))
         elseif d.action == "ordago" then
-            s:say(who .. ": ¡ÓRDAGO!")
+            s:say(Locale.t("game.feed_ordago", who))
         else
-            s:say(who .. ": " .. (ACTION_LABEL[d.action] or d.action):lower())
+            s:say(Locale.t("game.feed_bet", who, actionLabel(d.action):lower()))
         end
     end
 
     HANDLERS.phase_result = function(s, d)
+        local stage = (STAGE_KEYS[d.phase] and stageLabel(d.phase)) or d.phase
         if d.outcome == "rejected" then
-            s:say((STAGE_LABEL[d.phase] or d.phase) .. ": no querido")
+            s:say(Locale.t("game.phase_declined", stage))
         elseif d.outcome == "accepted" then
-            s:say((STAGE_LABEL[d.phase] or d.phase) .. ": querido, " .. tostring(d.amount))
+            s:say(Locale.t("game.phase_accepted", stage, d.amount or 0))
         end
     end
 
     HANDLERS.score = function(s, d)
         s.scores = d.scores or s.scores
-        local team = (d.team == s.myTeam) and "Nosotros" or "Ellos"
-        s:say(team .. " +" .. tostring(d.piedras) .. " (" .. tostring(d.reason) .. ")")
+        local team = (d.team == s.myTeam) and Locale.t("game.us") or Locale.t("game.them")
+        s:say(Locale.t("game.score", team, d.piedras or 0, tostring(d.reason)))
     end
 
     HANDLERS.showdown = function(s, d)
@@ -213,8 +237,31 @@ function GameScreen.new()
     end
 
     HANDLERS.game_end = function(s, d)
-        s.gameOver = d
         s.turn = nil
+        s._lastGameEnd = d
+        -- Online: a game_end is the end of one *set*; the authoritative
+        -- terminal signal is set_result (series_over). Sandbox has no
+        -- set_result, so game_end is terminal there.
+        if s.localTable then s.gameOver = d end
+    end
+
+    -- Online only: a 40-piedra set finished. Update the series tally; show the
+    -- game-over overlay if the best-of is decided, otherwise a brief banner.
+    HANDLERS.set_result = function(s, d)
+        s.setsWon    = d.sets_won or s.setsWon
+        s.bestOf     = d.best_of or s.bestOf
+        s.setsNeeded = d.sets_needed or s.setsNeeded
+        s.turn = nil
+        if d.series_over then
+            s.gameOver = {
+                winner_team = d.set_winner,
+                ordago = s._lastGameEnd and s._lastGameEnd.ordago,
+            }
+        else
+            s.setBanner = { winner = d.set_winner, sets_won = d.sets_won, at = love.timer.getTime() }
+            s.stage    = "waiting"
+            s.revealed = nil
+        end
     end
 
     HANDLERS.rewards = function(s, d) s.rewards = d end
@@ -228,6 +275,9 @@ function GameScreen.new()
         s.mySeat = d.seat or s.mySeat
         s.myTeam = d.team or s.myTeam
         s.ranked = d.ranked or false
+        if d.best_of     then s.bestOf     = d.best_of end
+        if d.sets_needed then s.setsNeeded = d.sets_needed end
+        if d.sets_won    then s.setsWon    = d.sets_won end
         local v = d.view
         if v then
             s.scores = v.scores or s.scores
@@ -240,9 +290,17 @@ function GameScreen.new()
             s.proposed = v.proposed or 0
             s.isOrdago = v.is_ordago or false
             if v.all_cards then s.revealed = v.all_cards end
-            if v.winner then s.gameOver = { winner_team = v.winner } end
+            -- v.winner is the current set's winner; only terminal once a team
+            -- has taken the majority of the best-of series.
+            if v.winner then
+                local sw = s.setsWon or { 0, 0 }
+                local need = s.setsNeeded or 1
+                if (sw[1] or 0) >= need or (sw[2] or 0) >= need then
+                    s.gameOver = { winner_team = v.winner }
+                end
+            end
         end
-        s:say("Reconectado")
+        s:say(Locale.t("game.reconnected"))
     end
 
     HANDLERS.seat_replaced = function(s, d)
@@ -250,23 +308,23 @@ function GameScreen.new()
         if d.players then
             for _, p in ipairs(d.players) do s.players[p.seat] = p end
         end
-        s:say(oldName .. " ahora es un bot")
+        s:say(Locale.t("game.now_bot", oldName))
     end
 
     HANDLERS.player_disconnected = function(s, d)
-        s:say(s:nameOf(d.seat) .. " se ha desconectado")
+        s:say(Locale.t("game.disconnected", s:nameOf(d.seat)))
     end
 
     HANDLERS.player_reconnected = function(s, d)
-        s:say(s:nameOf(d.seat) .. " ha vuelto")
+        s:say(Locale.t("game.player_back", s:nameOf(d.seat)))
     end
 
     HANDLERS.emote = function(s, d)
-        s:say(s:nameOf(d.seat) .. ": " .. tostring(d.emote))
+        s:say(Locale.t("game.feed_bet", s:nameOf(d.seat), tostring(d.emote)))
     end
 
     HANDLERS.timed_out = function(s, d)
-        s:say("Se te acabó el tiempo")
+        s:say(Locale.t("game.timed_out"))
     end
 
     HANDLERS.action_rejected = function(s, d) end
@@ -285,7 +343,7 @@ function GameScreen.new()
             self.localTable:update(dt)
         elseif self.socket then
             local ok = pcall(function() self.socket:update() end)
-            if not ok then self:say("Conexión perdida...") end
+            if not ok then self:say(Locale.t("game.conn_lost")) end
         end
 
         -- Card enter animation (Balatro-style exponential smoother, same
@@ -345,7 +403,7 @@ function GameScreen.new()
         local W, H = Constants.GAME_WIDTH, Constants.GAME_HEIGHT
         local sc = Constants.SCALE
 
-        lg.clear(0.043, 0.235, 0.149)   -- tapete green
+        lg.clear(Constants.COLORS.BACKGROUND)   -- universal palette green (#38453a)
 
         self:drawScores(W, H, sc)
         self:drawOpponent("top", W, H, sc)
@@ -357,19 +415,49 @@ function GameScreen.new()
         self:drawButtons(W, H, sc)
         self:drawLeave(W, H, sc)
 
+        if self.setBanner and not self.gameOver then self:drawSetBanner(W, H, sc) end
         if self.gameOver then self:drawGameOver(W, H, sc) end
         lg.setColor(1, 1, 1, 1)
+    end
+
+    -- Between-sets interstitial: who took the set and the running series tally.
+    function self:drawSetBanner(W, H, sc)
+        local lg = love.graphics
+        lg.setColor(0, 0, 0, 0.55)
+        lg.rectangle("fill", 0, 0, W, H)
+        local won = self.setBanner.winner == self.myTeam
+        lg.setFont(Fonts.large)
+        if won then lg.setColor(0.608, 0.631, 0.373, 1) else lg.setColor(0.757, 0.482, 0.361, 1) end
+        lg.printf(won and Locale.t("game.set_won") or Locale.t("game.set_lost"), 0, H * 0.40, W, 'center')
+        local sw = self.setBanner.sets_won or { 0, 0 }
+        local other = (self.myTeam == 1) and 2 or 1
+        lg.setFont(Fonts.medium)
+        lg.setColor(1, 1, 1, 0.9)
+        lg.printf(tostring(sw[self.myTeam] or 0) .. " – " .. tostring(sw[other] or 0),
+            0, H * 0.40 + Fonts.large:getHeight() + 10 * sc, W, 'center')
+        lg.setFont(Fonts.tiny)
+        lg.setColor(0.8, 0.8, 0.8, 0.9)
+        lg.printf(Locale.t("game.next_set"), 0, H * 0.58, W, 'center')
     end
 
     function self:drawScores(W, H, sc)
         local lg = love.graphics
         local topY = math.floor(Constants.SAFE_INSET_TOP + 8 * sc)
         lg.setFont(Fonts.small)
-        lg.setColor(0.96, 0.84, 0.74, 1)
-        lg.print("Nosotros " .. tostring(self.scores[self.myTeam] or 0), 12 * sc, topY)
+        lg.setColor(0.875, 0.902, 0.878, 1)
+        lg.print(Locale.t("game.score_us", self.scores[self.myTeam] or 0), 12 * sc, topY)
         local other = (self.myTeam == 1) and 2 or 1
-        local txt = "Ellos " .. tostring(self.scores[other] or 0)
+        local txt = Locale.t("game.score_them", self.scores[other] or 0)
         lg.print(txt, W - Fonts.small:getWidth(txt) - 12 * sc, topY)
+
+        -- Best-of series tally (only when more than one set is played)
+        if (self.bestOf or 1) > 1 then
+            local sw = self.setsWon or { 0, 0 }
+            lg.setFont(Fonts.tiny)
+            lg.setColor(0.851, 0.761, 0.467, 0.9)
+            local setsTxt = Locale.t("game.sets_tally", sw[self.myTeam] or 0, sw[other] or 0, self.bestOf)
+            lg.printf(setsTxt, 0, topY + Fonts.small:getHeight() + 2 * sc, W, 'center')
+        end
     end
 
     function self:drawOpponent(pos, W, H, sc)
@@ -425,43 +513,43 @@ function GameScreen.new()
         local isTurn = self.turn and self.turn.seats and self.turn.seats[1] == seat
         lg.setFont(Fonts.tiny)
         local name = self:nameOf(seat)
-        if seat == self.manoSeat then name = name .. " (mano)" end
+        if seat == self.manoSeat then name = name .. Locale.t("game.mano_tag") end
         local sameTeam = ((seat % 2 == 1) and 1 or 2) == self.myTeam
-        if isTurn then lg.setColor(1, 0.9, 0.3, 1)
-        elseif sameTeam then lg.setColor(0.75, 0.95, 0.75, 1)
-        else lg.setColor(0.95, 0.8, 0.75, 1) end
+        if isTurn then lg.setColor(0.851, 0.761, 0.467, 1)
+        elseif sameTeam then lg.setColor(0.608, 0.631, 0.373, 1)
+        else lg.setColor(0.757, 0.482, 0.361, 1) end
         lg.printf(name, nameX, nameY, nameW, 'center')
     end
 
     function self:drawCenter(W, H, sc)
         local lg = love.graphics
-        local label = STAGE_LABEL[self.stage] or ""
+        local label = stageLabel(self.stage)
         if self.stage == "waiting" then label = "..." end
         local cy = math.floor(H * 0.42)
         if label ~= "" then
             lg.setFont(Fonts.large)
-            lg.setColor(0.96, 0.84, 0.74, 0.95)
+            lg.setColor(0.875, 0.902, 0.878, 0.95)
             lg.printf(label, 0, cy, W, 'center')
         end
         if self.isOrdago then
             lg.setFont(Fonts.small)
-            lg.setColor(1, 0.5, 0.3, 1)
-            lg.printf("¡ÓRDAGO EN JUEGO!", 0, cy + Fonts.large:getHeight() + 4 * sc, W, 'center')
+            lg.setColor(0.757, 0.482, 0.361, 1)
+            lg.printf(Locale.t("game.ordago_live"), 0, cy + Fonts.large:getHeight() + 4 * sc, W, 'center')
         elseif self.proposed and self.proposed > 0 then
             lg.setFont(Fonts.small)
-            lg.setColor(1, 0.9, 0.3, 1)
-            lg.printf("bote: " .. tostring(self.proposed), 0, cy + Fonts.large:getHeight() + 4 * sc, W, 'center')
+            lg.setColor(0.851, 0.761, 0.467, 1)
+            lg.printf(Locale.t("game.pot", self.proposed), 0, cy + Fonts.large:getHeight() + 4 * sc, W, 'center')
         end
 
         -- Turn line + countdown (server enforces 25s; no timeout in sandbox).
         if self.turn and self.turn.seats and #self.turn.seats > 0 then
             local who = self.turn.seats[1]
             lg.setFont(Fonts.tiny)
-            lg.setColor(0.76, 0.64, 0.54, 0.9)
-            local whoTxt = self:isMyTurn() and "tu turno" or ("turno de " .. self:nameOf(who))
+            lg.setColor(0.757, 0.482, 0.361, 0.9)
+            local whoTxt = self:isMyTurn() and Locale.t("game.your_turn") or Locale.t("game.their_turn", self:nameOf(who))
             if not self.isSandbox then
                 local remain = math.max(0, 25 - (love.timer.getTime() - self.turnAt))
-                whoTxt = whoTxt .. "  ·  " .. tostring(math.ceil(remain)) .. "s"
+                whoTxt = whoTxt .. "  ·  " .. Locale.t("game.seconds", math.ceil(remain))
             end
             lg.printf(whoTxt, 0, cy - Fonts.tiny:getHeight() - 6 * sc, W, 'center')
         end
@@ -515,7 +603,7 @@ function GameScreen.new()
                 lg.setColor(1, 1, 1, alpha)
                 CardRenderer.draw(card, drawX, drawY, cardW, alpha)
                 if self.selected[i] then
-                    lg.setColor(1, 0.85, 0.2, 1)
+                    lg.setColor(0.851, 0.761, 0.467, 1)
                     lg.setLineWidth(math.max(2, 2 * sc))
                     lg.rectangle("line", drawX, drawY, cardW, CardRenderer.height(cardW),
                         math.floor(cardW * 0.09), math.floor(cardW * 0.09))
@@ -526,9 +614,9 @@ function GameScreen.new()
 
         -- My name plate under the hand
         lg.setFont(Fonts.tiny)
-        lg.setColor(0.75, 0.95, 0.75, 1)
-        local label = "Tú"
-        if self.mySeat == self.manoSeat then label = label .. " (mano)" end
+        lg.setColor(0.608, 0.631, 0.373, 1)
+        local label = Locale.t("game.you")
+        if self.mySeat == self.manoSeat then label = label .. Locale.t("game.mano_tag") end
         lg.printf(label, 0, H - Constants.SAFE_INSET_BOTTOM - 18 * sc, W, 'center')
     end
 
@@ -543,12 +631,12 @@ function GameScreen.new()
         for _, opt in ipairs(opts) do
             if opt == "discard" then
                 local n = selectedCount(self.selected)
-                defs[#defs + 1] = { id = "discard", label = "Descartar " .. n, enabled = n > 0 }
+                defs[#defs + 1] = { id = "discard", label = Locale.t("game.btn_discard", n), enabled = n > 0 }
             elseif opt == "envido" then
                 local raising = (self.turn.proposed or 0) > 0
-                defs[#defs + 1] = { id = "envido", label = raising and "Subir 2" or "Envido 2", enabled = true }
+                defs[#defs + 1] = { id = "envido", label = raising and Locale.t("game.btn_raise") or Locale.t("game.btn_envido"), enabled = true }
             else
-                defs[#defs + 1] = { id = opt, label = ACTION_LABEL[opt] or opt, enabled = true }
+                defs[#defs + 1] = { id = opt, label = actionLabel(opt), enabled = true }
             end
         end
         if #defs == 0 then return end
@@ -565,12 +653,12 @@ function GameScreen.new()
             local pressed = (self._pressedBtn == def.id)
             local dy = pressed and math.floor(2 * sc) or 0
 
-            lg.setColor(0.031, 0.078, 0.118, 1)
+            lg.setColor(0.133, 0.133, 0.157, 1)
             lg.rectangle("fill", x + 2, y + 4, btnW, btnH, 8, 8)
-            if not def.enabled then lg.setColor(0.35, 0.35, 0.38, 1)
-            elseif def.id == "ordago" then lg.setColor(0.65, 0.25, 0.20, 1)
-            elseif def.id == "quiero" or def.id == "mus" then lg.setColor(0.15, 0.40, 0.30, 1)
-            else lg.setColor(0.13, 0.25, 0.38, 1) end
+            if not def.enabled then lg.setColor(0.290, 0.212, 0.235, 1)
+            elseif def.id == "ordago" then lg.setColor(0.522, 0.267, 0.290, 1)
+            elseif def.id == "quiero" or def.id == "mus" then lg.setColor(0.608, 0.631, 0.373, 1)
+            else lg.setColor(0.463, 0.529, 0.671, 1) end
             lg.rectangle("fill", x, y + dy, btnW, btnH, 8, 8)
             lg.setColor(1, 1, 1, def.enabled and 1 or 0.5)
             local font = (btnW < 110 * sc) and Fonts.tiny or Fonts.small
@@ -588,9 +676,9 @@ function GameScreen.new()
         local y = math.floor(Constants.SAFE_INSET_TOP + 6 * sc)
         lg.setFont(Fonts.tiny)
         if self.leaveArmed then
-            local txt = "¿Salir? Toca otra vez"
+            local txt = Locale.t("game.leave_confirm")
             local tw = Fonts.tiny:getWidth(txt)
-            lg.setColor(1, 0.5, 0.4, 1)
+            lg.setColor(0.757, 0.482, 0.361, 1)
             lg.print(txt, x + size - tw, y + size + 2 * sc)
         end
         lg.setColor(1, 1, 1, 0.55)
@@ -607,20 +695,20 @@ function GameScreen.new()
         lg.rectangle("fill", 0, 0, W, H)
         local won = self.gameOver.winner_team == self.myTeam
         lg.setFont(Fonts.large)
-        if won then lg.setColor(0.4, 1, 0.4, 1) else lg.setColor(1, 0.45, 0.4, 1) end
-        lg.printf(won and "¡HABÉIS GANADO!" or "HABÉIS PERDIDO", 0, H * 0.38, W, 'center')
+        if won then lg.setColor(0.608, 0.631, 0.373, 1) else lg.setColor(0.757, 0.482, 0.361, 1) end
+        lg.printf(won and Locale.t("game.you_win") or Locale.t("game.you_lose"), 0, H * 0.38, W, 'center')
         lg.setFont(Fonts.small)
         lg.setColor(1, 1, 1, 0.9)
         if self.gameOver.ordago then
-            lg.printf("por órdago", 0, H * 0.38 + Fonts.large:getHeight() + 8 * sc, W, 'center')
+            lg.printf(Locale.t("game.by_ordago"), 0, H * 0.38 + Fonts.large:getHeight() + 8 * sc, W, 'center')
         end
         if self.rewards and self.rewards.trophy_delta then
             local sign = self.rewards.trophy_delta >= 0 and "+" or ""
-            lg.printf(sign .. tostring(self.rewards.trophy_delta) .. " trofeos", 0, H * 0.50, W, 'center')
+            lg.printf(Locale.t("game.trophy_delta", sign, self.rewards.trophy_delta), 0, H * 0.50, W, 'center')
         end
         lg.setFont(Fonts.tiny)
         lg.setColor(0.8, 0.8, 0.8, 0.9)
-        lg.printf("Toca para volver al menú", 0, H * 0.62, W, 'center')
+        lg.printf(Locale.t("game.tap_menu"), 0, H * 0.62, W, 'center')
     end
 
     -- ── input ─────────────────────────────────────────────────────────────────

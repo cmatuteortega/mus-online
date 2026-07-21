@@ -11,6 +11,7 @@ local UnitRegistry = require('src.unit_registry')
 local sock         = require('lib.sock')
 local json         = require('lib.json')
 local config       = require('src.config')
+local Locale       = require('src.locale')
 
 local PreloadScreen = {}
 
@@ -289,10 +290,10 @@ function PreloadScreen.new()
         if ratio < 0 then ratio = 0 end
         if ratio > 1 then ratio = 1 end
 
-        lg.setColor(0.2, 0.25, 0.35, 1)
+        lg.setColor(0.267, 0.290, 0.396, 1)
         lg.rectangle('fill', barX, barY, barW, barH)
 
-        lg.setColor(0.5, 0.7, 1, 1)
+        lg.setColor(0.663, 0.733, 0.800, 1)
         lg.rectangle('fill', barX, barY, barW * ratio, barH)
 
         lg.setColor(1, 1, 1, 1)
@@ -301,18 +302,18 @@ function PreloadScreen.new()
 
         if self.authStatus == "no_network" then
             lg.setFont(Fonts.medium)
-            lg.setColor(1, 0.5, 0.5, 1)
-            lg.printf("Sin conexión a internet",
+            lg.setColor(0.757, 0.482, 0.361, 1)
+            lg.printf(Locale.t("common.no_internet"),
                       0, barY + barH + 14 * sc, W, 'center')
 
             -- Two options: retry the connection, or play offline vs bots.
             local optY = barY + barH + 14 * sc + Fonts.medium:getHeight() + 10 * sc
             lg.setFont(Fonts.small)
             lg.setColor(0.85, 0.85, 0.9, 1)
-            lg.printf("Toca para reintentar", 0, optY, W, 'center')
+            lg.printf(Locale.t("common.tap_retry"), 0, optY, W, 'center')
             local offY = optY + Fonts.small:getHeight() + 12 * sc
-            lg.setColor(0.6, 0.9, 0.7, 1)
-            lg.printf("Jugar OFFLINE contra bots", 0, offY, W, 'center')
+            lg.setColor(0.608, 0.631, 0.373, 1)
+            lg.printf(Locale.t("preload.play_offline"), 0, offY, W, 'center')
             self._offlineRect = { x = 0, y = offY - 8 * sc, w = W,
                                   h = Fonts.small:getHeight() + 16 * sc }
         else

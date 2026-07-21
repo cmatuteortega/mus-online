@@ -4,6 +4,7 @@
 
 local MusEngine = require('shared.mus_engine')
 local Bot       = require('shared.mus_bot')
+local Locale    = require('src.locale')
 
 local BOT_DELAY       = 2.2   -- bots "think" so the player can follow the round
 local NEXT_HAND_DELAY = 4.0
@@ -87,7 +88,7 @@ function LocalTable.roster()
     for seat = 1, 4 do
         out[#out + 1] = {
             seat = seat, team = (seat % 2 == 1) and 1 or 2,
-            username = (seat == 1) and ((_G.PlayerData and _G.PlayerData.username) or "Tú")
+            username = (seat == 1) and ((_G.PlayerData and _G.PlayerData.username) or Locale.t("game.you"))
                         or Bot.pickName(seat),
             trophies = 0, is_bot = seat ~= 1, connected = seat == 1,
         }

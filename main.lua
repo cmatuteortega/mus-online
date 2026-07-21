@@ -5,6 +5,7 @@
 local Push = require('lib.push')
 local ScreenManager = require('lib.screen_manager')
 local Constants = require('src.constants')
+local PaletteShader = require('src.palette_shader')
 require('lib.audio')  -- overrides love.audio.play/stop with source-tracking wrappers
 
 -- Global audio manager (music + SFX)
@@ -12,6 +13,9 @@ AudioManager = require('src.audio_manager')
 
 -- Global transition manager (cloud curtain between screens)
 TransitionManager = require('src.transition_manager')
+
+-- Global locale (English / Spanish, persisted to locale.json)
+Locale = require('src.locale')
 
 -- Load screens
 local NameEntryScreen = require('src.screens.name_entry')
@@ -169,8 +173,8 @@ function love.draw()
     -- Cloud curtain on top of everything (still inside Push virtual coords)
     TransitionManager.draw()
 
-    -- Finish rendering
-    Push:finish()
+    -- Finish rendering — snap the entire frame to the 12-colour project palette
+    Push:finish(PaletteShader.get())
 end
 
 -- Input callbacks

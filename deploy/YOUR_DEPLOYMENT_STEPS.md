@@ -1,101 +1,91 @@
-# Your Mus Online Deployment - Exact Commands
+# Mus Online Deployment — Exact Commands
 
 Your VPS IP: **75.119.142.247**
 
-Copy and paste these commands in order!
+> **This server coexists with the AutoChest autobattler on the same VPS.**
+> Mus is fully namespaced away from it — different directory (`/opt/mus-online`
+> vs `/opt/autochest`), different port (**12346** vs 12345), different systemd
+> unit (`mus-server`), and its own database. **Never** point these commands at
+> `/opt/autochest`, reuse port 12345, or touch the AutoChest systemd unit.
+
+Copy and paste these in order. Run the **(Mac)** blocks in a terminal on your
+laptop and the **(VPS)** blocks inside the SSH session.
 
 ---
 
-## STEP 1: Upload Code to VPS (Run on Your Mac)
+## Prerequisites (already satisfied)
 
-Open a new Terminal window (not Claude Code) and run:
+Because the VPS already runs AutoChest, it **already has** `love`, `lua5.1`,
+`luarocks`, `lsqlite3complete`, `bcrypt`, and `xvfb` installed.
+
+**Do NOT run `deploy/server-setup.sh`** — it does `apt upgrade -y` and
+`add-apt-repository`, which is unnecessary and risky on a live production box.
+The only case you'd install anything is if Step 2 fails with a missing-module
+error; then install just that one rock (see Troubleshooting).
+
+---
+
+## STEP 1: Upload Code to the VPS (Mac)
+
+The server relies on repo-relative paths (`package.path` gets `../?.lua` in
+`server/main.lua`), so `server/`, `shared/`, and `lib/` must all sit as siblings
+under `/opt/mus-online`. Upload the whole repo, excluding git and any local DB:
 
 ```bash
-cd /Users/cmatute1/auto-chest/auto-chest
-scp -r . root@75.119.142.247:/opt/mus-online/
+rsync -avz --exclude '.git' --exclude 'server/players.db' \
+  ~/mus-online/ root@75.119.142.247:/opt/mus-online/
 ```
 
-When prompted for password, enter your VPS root password.
-
-**This will take 1-2 minutes to upload.**
+Enter your VPS root password when prompted. Takes ~1-2 minutes.
 
 ---
 
-## STEP 2: Connect to Your VPS
+## STEP 2: Install & Start the systemd Unit (VPS)
 
 ```bash
 ssh root@75.119.142.247
-```
 
-Enter your VPS password when prompted.
-
-You're now inside your VPS!
-
----
-
-## STEP 3: Run Setup Script
-
-```bash
-cd /opt/mus-online
-chmod +x deploy/server-setup.sh
-./deploy/server-setup.sh
-```
-
-**This will take 2-5 minutes.** It will:
-- Update Ubuntu
-- Install Love2D
-- Install Lua dependencies
-- Create directories
-
----
-
-## STEP 4: Configure Firewall
-
-```bash
-sudo ufw allow 22/tcp
-sudo ufw allow 12346/tcp
-sudo ufw allow 12346/udp
-sudo ufw --force enable
-```
-
-**Important:** This allows your game server port and protects SSH.
-
----
-
-## STEP 5: Install and Start Server
-
-```bash
 sudo cp /opt/mus-online/deploy/mus-server.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable mus-server
-sudo systemctl start mus-server
-```
-
----
-
-## STEP 6: Check Server Status
-
-```bash
+sudo systemctl enable --now mus-server
 sudo systemctl status mus-server
 ```
 
-**Look for:**
-- "active (running)" in **green**
-- "Mus Online matchmaking server started on port 12346"
+The unit is `mus-server`, `WorkingDirectory=/opt/mus-online`, and runs
+`xvfb-run -a love server/` (headless Love2D). It is a **separate** unit from
+AutoChest's, so restarting/stopping it never affects the autobattler.
 
-**If you see errors**, run:
+**Look for:** `active (running)` in green.
+
+**If it fails to start:**
 ```bash
 sudo journalctl -u mus-server -n 50 --no-pager
 ```
 
-Press `q` to exit.
+---
+
+## STEP 3: Open the Mus Port (VPS)
+
+Add **only** 12346. Leave AutoChest's 12345 rule in place.
+
+```bash
+sudo ufw allow 12346/tcp
+sudo ufw allow 12346/udp
+sudo ufw status          # confirm BOTH 12345 (autochest) and 12346 (mus) appear
+```
 
 ---
 
-## STEP 7: View Live Logs (Optional)
+## STEP 4: Verify the Server (Mac + VPS)
 
+**Port reachable (Mac)** — ENet is UDP:
 ```bash
-sudo journalctl -u mus-server -f
+nc -zvu 75.119.142.247 12346
+```
+
+**Watch live logs (VPS)** — keep this open while you test:
+```bash
+ssh root@75.119.142.247 'journalctl -u mus-server -f'
 ```
 
 You should see:
@@ -104,144 +94,94 @@ Database initialized
 Mus Online matchmaking server started on port 12346
 ```
 
-Press `Ctrl+C` to exit log view.
+The database is created fresh at `/opt/mus-online/server/players.db` — its own
+file, separate from AutoChest's. Press `Ctrl+C` to stop tailing.
 
 ---
 
-## STEP 8: Test Port is Open (Run on Your Mac)
+## STEP 5: Log In / Create an Account (Mac)
 
-Open a **new Terminal window** on your Mac (keep VPS SSH open):
+`play-online.sh` already sets `MUS_PRODUCTION=true` and
+`MUS_SERVER_IP=75.119.142.247`, so it connects straight to production:
 
 ```bash
-nc -zv 75.119.142.247 12346
+cd ~/mus-online && ./play-online.sh
 ```
 
-**Expected output:**
-```
-Connection to 75.119.142.247 port 12346 [tcp/*] succeeded!
-```
-
-**If it fails:**
-- Check firewall on VPS: `sudo ufw status`
-- Check server is running: `sudo systemctl status mus-server`
+You should reach the **name-entry screen** → register a new account. Watch the
+`journalctl -f` from Step 4 to see the register/login messages land server-side.
 
 ---
 
-## STEP 9: Connect Game Client to Production
+## STEP 6: Test Multiplayer (Mac)
 
-On your Mac:
-
-```bash
-cd /Users/cmatute1/auto-chest/auto-chest
-export AUTOCHEST_PRODUCTION=true
-export AUTOCHEST_SERVER_IP=75.119.142.247
-love .
-```
-
-**You should see the login screen!**
-
-Try to:
-1. Register a new account
-2. Login
-3. Click "PLAY ONLINE"
-
----
-
-## STEP 10: Test Multiplayer
-
-Run the game on **two different computers** (or run twice on your Mac):
-
-**Terminal 1:**
-```bash
-cd /Users/cmatute1/auto-chest/auto-chest
-export AUTOCHEST_PRODUCTION=true
-love .
-```
-
-**Terminal 2 (same commands):**
-```bash
-cd /Users/cmatute1/auto-chest/auto-chest
-export AUTOCHEST_PRODUCTION=true
-love .
-```
-
-- Register/login with **different usernames**
-- Both click "PLAY ONLINE"
-- They should match and start a game!
-
----
-
-## SUCCESS! 🎉
-
-Your server is now live at: **75.119.142.247:12346**
-
-Anyone can connect by:
-1. Setting `export AUTOCHEST_PRODUCTION=true`
-2. Running `love .` from your game directory
-
----
-
-## Useful Commands (Run on VPS)
+Run the client twice (two terminals), registering **different** usernames, and
+have both queue — or use a private room with "start with bots" to fill a table.
 
 ```bash
-# Restart server
-sudo systemctl restart mus-server
-
-# Stop server
-sudo systemctl stop mus-server
-
-# View logs
-sudo journalctl -u mus-server -f
-
-# Check status
-sudo systemctl status mus-server
-
-# View matchmaking log file
-tail -f /opt/mus-online/server/matchmaking.log
+cd ~/mus-online && ./play-online.sh   # terminal 1
+cd ~/mus-online && ./play-online.sh   # terminal 2
 ```
 
 ---
 
-## Updating Server After Code Changes
+## SUCCESS 🎉
 
-When you make changes to your code:
+Mus Online is live at **75.119.142.247:12346**, running alongside AutoChest on
+12345. Anyone can connect with `./play-online.sh` from the repo.
 
-**On your Mac:**
+---
+
+## Updating the Server After Code Changes
+
+**Mac** — re-sync (the `--exclude` keeps the live player DB intact):
 ```bash
-cd /Users/cmatute1/auto-chest/auto-chest
-rsync -avz --exclude 'server/players.db' . root@75.119.142.247:/opt/mus-online/
+rsync -avz --exclude '.git' --exclude 'server/players.db' \
+  ~/mus-online/ root@75.119.142.247:/opt/mus-online/
 ```
 
-**On VPS:**
+**VPS** — restart only the mus unit:
 ```bash
-ssh root@75.119.142.247
-sudo systemctl restart mus-server
+ssh root@75.119.142.247 'sudo systemctl restart mus-server'
+```
+
+---
+
+## Useful Commands (VPS)
+
+```bash
+sudo systemctl restart mus-server     # restart
+sudo systemctl stop mus-server        # stop
+sudo systemctl status mus-server      # status
+sudo journalctl -u mus-server -f      # live logs
+sudo netstat -tulpn | grep 12346      # confirm it's listening
 ```
 
 ---
 
 ## Troubleshooting
 
-**Can't upload code?**
-```bash
-# Check SSH connection
-ssh root@75.119.142.247
-# If this fails, check your VPS is running
-```
-
-**Server won't start?**
+**Server won't start / missing module?**
 ```bash
 ssh root@75.119.142.247
 sudo journalctl -u mus-server -n 100 --no-pager
-# Look for error messages
+```
+If it names a missing Lua rock (rare — AutoChest installed the shared set), add
+just that one, e.g.:
+```bash
+sudo luarocks install <rockname>
+sudo systemctl restart mus-server
 ```
 
-**Can't connect from game?**
+**Can't connect from the client?**
 ```bash
-# Test port on VPS
-ssh root@75.119.142.247
-sudo netstat -tulpn | grep 12346
-# Should show LISTEN on port 12346
+ssh root@75.119.142.247 'sudo netstat -tulpn | grep 12346'   # should show LISTEN
+ssh root@75.119.142.247 'sudo ufw status'                     # 12346 tcp+udp present?
+```
+
+**Did I break AutoChest?** You shouldn't have — nothing above touches it. Sanity check:
+```bash
+ssh root@75.119.142.247 'sudo systemctl status <autochest-unit> && sudo ufw status | grep 12345'
 ```
 
 ---
@@ -251,13 +191,10 @@ sudo netstat -tulpn | grep 12346
 ```bash
 ssh root@75.119.142.247
 chmod +x /opt/mus-online/deploy/backup-db.sh
+/opt/mus-online/deploy/backup-db.sh          # test once
 
-# Test backup
-/opt/mus-online/deploy/backup-db.sh
-
-# Schedule automatic backups every 6 hours
 sudo crontab -e
-# Add this line:
+# add:
 0 */6 * * * /opt/mus-online/deploy/backup-db.sh
 ```
 
@@ -265,7 +202,5 @@ sudo crontab -e
 
 ## Need Help?
 
-If you get stuck at any step, tell me:
-1. Which step number you're on
-2. The exact error message
-3. I'll help you fix it!
+If you get stuck, note: (1) which step, (2) the exact error, (3) the last ~20
+lines of `journalctl -u mus-server`.
